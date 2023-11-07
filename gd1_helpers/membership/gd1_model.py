@@ -15,13 +15,13 @@ phi1_lim = (-100, 20)
 
 class GD1Base:
     coord_names = ("phi2", "pm1", "pm2")
-    coord_bounds = {"phi1": phi1_lim, "phi2": (-7, 5), "pm1": (-15, -1.0)}
+    coord_bounds = {"phi1": phi1_lim, "phi2": (-8, 3.3), "pm1": (-15, -6.0), "pm2": (-5.4, 0.2)}
 
     default_grids = {
         "phi1": np.arange(*coord_bounds["phi1"], 0.2),
         "phi2": np.arange(*coord_bounds["phi2"], 0.1),
         "pm1": np.arange(*coord_bounds["pm1"], 0.1),
-        "pm2": np.arange(-10, 10 + 1e-3, 0.1),
+        "pm2": np.arange(*coord_bounds["pm2"], 0.1),
     }
 
 
@@ -63,8 +63,8 @@ class GD1BackgroundModel(GD1Base, StreamModel):
                 "w": dist.Uniform(0, 1).expand((pm2_knots.size,)),
                 "mean1": dist.Uniform(-5, 0).expand((pm2_knots.size,)),
                 "mean2": dist.Uniform(-5, 0).expand((pm2_knots.size,)),
-                "ln_std1": dist.Uniform(0.75, 3).expand((pm2_knots.size,)),
-                "ln_std2": dist.Uniform(0.75, 3).expand((pm2_knots.size,)),
+                "ln_std1": dist.Uniform(0, 3).expand((pm2_knots.size,)),
+                "ln_std2": dist.Uniform(0, 3).expand((pm2_knots.size,)),
             },
             knots=pm2_knots,
             spline_ks={"w": 1},
@@ -131,6 +131,7 @@ class GD1StreamModel(GD1Base, StreamModel):
                 "ln_std": dist.Uniform(-5, -0.75).expand(pm2_knots.shape),  # ~20 km/s
             },
             knots=pm2_knots,
+            coord_bounds=GD1Base.coord_bounds.get("pm2"),
         ),
     }
     data_required = {
