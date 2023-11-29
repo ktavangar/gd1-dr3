@@ -43,9 +43,9 @@ class BackgroundModel(Base, StreamModel):
 
     ln_N_dist = dist.Uniform(-10, 15)
 
-    phi1_locs = get_grid(*Base.phi1_lim, 20.0, pad_num=1).reshape(-1, 1)  # every 20º
+    phi1_locs = get_grid(*Base.phi1_lim, 10.0, pad_num=1).reshape(-1, 1)  # every 10º
     pm1_knots = get_grid(*Base.coord_bounds["phi1"], 10.0)
-    pm2_knots = get_grid(*Base.coord_bounds["phi1"], 20.0)
+    pm2_knots = get_grid(*Base.coord_bounds["phi1"], 10.0)
 
     variables = {
         "phi1": GridGMMVariable(
@@ -53,7 +53,7 @@ class BackgroundModel(Base, StreamModel):
                 "zs": dist.Uniform(-8.0, 8.0).expand((phi1_locs.shape[0] - 1,)),
             },
             locs=phi1_locs,
-            scales=np.full_like(phi1_locs, 20.0),
+            scales=np.full_like(phi1_locs, 10.0),
             coord_bounds=Base.phi1_lim,
         ),
         "phi2": UniformVariable(
@@ -94,9 +94,9 @@ class BackgroundModel(Base, StreamModel):
     def bkg_update(cls, pawprint, data):
         cls.phi1_lim, cls.coord_bounds, cls.default_grids = Base.setup(pawprint, data)
         
-        cls.phi1_locs = get_grid(*cls.phi1_lim, 20.0, pad_num=1).reshape(-1, 1)  # every 20º
+        cls.phi1_locs = get_grid(*cls.phi1_lim, 10.0, pad_num=1).reshape(-1, 1)  # every 20º
         cls.pm1_knots = get_grid(*cls.coord_bounds["phi1"], 10.0)
-        cls.pm2_knots = get_grid(*cls.coord_bounds["phi1"], 20.0)
+        cls.pm2_knots = get_grid(*cls.coord_bounds["phi1"], 10.0)
         
         cls.variables = {
             "phi1": GridGMMVariable(
@@ -104,7 +104,7 @@ class BackgroundModel(Base, StreamModel):
                     "zs": dist.Uniform(-8.0, 8.0).expand((cls.phi1_locs.shape[0] - 1,)),
                 },
                 locs=cls.phi1_locs,
-                scales=np.full_like(cls.phi1_locs, 20.0),
+                scales=np.full_like(cls.phi1_locs, 10.0),
                 coord_bounds=cls.phi1_lim,
             ),
             "phi2": UniformVariable(
@@ -113,10 +113,10 @@ class BackgroundModel(Base, StreamModel):
             "pm1": Normal1DSplineMixtureVariable(
                 param_priors={
                     "w": dist.Uniform(0, 1).expand((cls.pm1_knots.size,)),
-                    "mean1": dist.Uniform(-5, 20).expand((cls.pm1_knots.size,)),
-                    "mean2": dist.Uniform(-5, 20).expand((cls.pm1_knots.size,)),
-                    "ln_std1": dist.Uniform(0, 3).expand((cls.pm1_knots.size,)),
-                    "ln_std2": dist.Uniform(0, 3).expand((cls.pm1_knots.size,)),
+                    "mean1": dist.Uniform(-20, 20).expand((cls.pm1_knots.size,)),
+                    "mean2": dist.Uniform(-20, 20).expand((cls.pm1_knots.size,)),
+                    "ln_std1": dist.Uniform(-2, 3).expand((cls.pm1_knots.size,)),
+                    "ln_std2": dist.Uniform(-2, 3).expand((cls.pm1_knots.size,)),
                 },
                 knots=cls.pm1_knots,
                 spline_ks={"w": 1},
@@ -125,10 +125,10 @@ class BackgroundModel(Base, StreamModel):
             "pm2": Normal1DSplineMixtureVariable(
                 param_priors={
                     "w": dist.Uniform(0, 1).expand((cls.pm2_knots.size,)),
-                    "mean1": dist.Uniform(-5, 0).expand((cls.pm2_knots.size,)),
-                    "mean2": dist.Uniform(-5, 0).expand((cls.pm2_knots.size,)),
-                    "ln_std1": dist.Uniform(0, 3).expand((cls.pm2_knots.size,)),
-                    "ln_std2": dist.Uniform(0, 3).expand((cls.pm2_knots.size,)),
+                    "mean1": dist.Uniform(-20, 20).expand((cls.pm2_knots.size,)),
+                    "mean2": dist.Uniform(-20, 20).expand((cls.pm2_knots.size,)),
+                    "ln_std1": dist.Uniform(-2, 3).expand((cls.pm2_knots.size,)),
+                    "ln_std2": dist.Uniform(-2, 3).expand((cls.pm2_knots.size,)),
                 },
                 knots=cls.pm2_knots,
                 spline_ks={"w": 1},
@@ -215,10 +215,10 @@ class StreamDensModel(Base, StreamModel):
     phi1_dens_step = 4.0  # knots every 4º
     phi1_locs = get_grid(*Base.phi1_lim, phi1_dens_step, pad_num=1).reshape(-1, 1)
 
-    phi2_knots = get_grid(*Base.phi1_lim, 8.0)  # knots every 8º
+    phi2_knots = get_grid(*Base.phi1_lim, 10.0)  # knots every 8º
 
-    pm1_knots = get_grid(*Base.phi1_lim, 15.0)  # knots every 15º
-    pm2_knots = get_grid(*Base.phi1_lim, 25.0)  # knots every 25º
+    pm1_knots = get_grid(*Base.phi1_lim, 10.0)  # knots every 15º
+    pm2_knots = get_grid(*Base.phi1_lim, 10.0)  # knots every 25º
 
     variables = {
         "phi1": GridGMMVariable(
@@ -249,15 +249,15 @@ class StreamDensModel(Base, StreamModel):
                 "mean": dist.Uniform(*Base.coord_bounds.get("pm1")).expand(
                     pm1_knots.shape
                 ),
-                "ln_std": dist.Uniform(-5, -0.75).expand(pm1_knots.shape),  # ~20 km/s
+                "ln_std": dist.Uniform(-5, 0).expand(pm1_knots.shape),  # ~20 km/s
             },
             knots=pm1_knots,
             coord_bounds=Base.coord_bounds.get("pm1"),
         ),
         "pm2": Normal1DSplineVariable(
             param_priors={
-                "mean": dist.Uniform(-5, 5).expand(pm2_knots.shape),
-                "ln_std": dist.Uniform(-5, -0.75).expand(pm2_knots.shape),  # ~20 km/s
+                "mean": dist.Uniform(-10, 10).expand(pm2_knots.shape),
+                "ln_std": dist.Uniform(-5, 0).expand(pm2_knots.shape),  # ~20 km/s
             },
             knots=pm2_knots,
             coord_bounds=Base.coord_bounds.get("pm2"),
@@ -289,12 +289,13 @@ class StreamDensModel(Base, StreamModel):
     def stream_dens_update(cls, pawprint, data):
         cls.phi1_lim, cls.coord_bounds, cls.default_grids = Base.setup(pawprint, data)
         
+        cls.phi1_lim = (np.min(pawprint.skyprint['stream'].vertices[:,0]),np.max(pawprint.skyprint['stream'].vertices[:,0]))
         cls.phi1_locs = get_grid(*cls.phi1_lim, cls.phi1_dens_step, pad_num=1).reshape(-1, 1)
 
-        cls.phi2_knots = get_grid(*cls.phi1_lim, 8.0)  # knots every 8º
+        cls.phi2_knots = get_grid(*cls.phi1_lim, 10.0)  # knots every 10º
 
-        cls.pm1_knots = get_grid(*cls.phi1_lim, 15.0)  # knots every 15º
-        cls.pm2_knots = get_grid(*cls.phi1_lim, 25.0)  # knots every 25º
+        cls.pm1_knots = get_grid(*cls.phi1_lim, 10.0)  # knots every 10º
+        cls.pm2_knots = get_grid(*cls.phi1_lim, 10.0)  # knots every 10º
 
         cls.variables = {
             "phi1": GridGMMVariable(
@@ -325,15 +326,15 @@ class StreamDensModel(Base, StreamModel):
                     "mean": dist.Uniform(*cls.coord_bounds.get("pm1")).expand(
                         cls.pm1_knots.shape
                     ),
-                    "ln_std": dist.Uniform(-5, -0.75).expand(cls.pm1_knots.shape),  # ~20 km/s
+                    "ln_std": dist.Uniform(-5, 0).expand(cls.pm1_knots.shape),  # ~20 km/s
                 },
                 knots=cls.pm1_knots,
                 coord_bounds=cls.coord_bounds.get("pm1"),
             ),
             "pm2": Normal1DSplineVariable(
                 param_priors={
-                    "mean": dist.Uniform(-5, 5).expand(cls.pm2_knots.shape),
-                    "ln_std": dist.Uniform(-5, -0.75).expand(cls.pm2_knots.shape),  # ~20 km/s
+                    "mean": dist.Uniform(*cls.coord_bounds.get("pm1")).expand(cls.pm2_knots.shape),
+                    "ln_std": dist.Uniform(-5, 0).expand(cls.pm2_knots.shape),  # ~20 km/s
                 },
                 knots=cls.pm2_knots,
                 coord_bounds=cls.coord_bounds.get("pm2"),
