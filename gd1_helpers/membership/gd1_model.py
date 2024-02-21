@@ -352,10 +352,10 @@ class OffTrackModel(Base, StreamModel):
 
     ln_N_dist = dist.Uniform(-5, 10)
 
-    dens_phi1_lim = (-60, 0)
-    dens_phi2_lim = (-3, 3)
+    dens_phi1_lim = (-100, 20)
+    dens_phi2_lim = (-8, 3)
 
-    dens_steps = [2.0, 0.25]
+    dens_steps = [4.0, 0.5]
     spar_steps = [8.0, 4.0]
             
     dens_locs = np.stack(
