@@ -8,7 +8,6 @@ from gd1_helpers.membership.gd1_model import (
 )
 
 def bkg_initialization(bkg_data):
-    
     bkg_init_p = {
         "ln_N": np.log(len(bkg_data['phi1'])),
         #"phi1": {'zs': np.array([-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5])+1},
@@ -38,24 +37,24 @@ def stream_initialization(stream_data, p):
     _phi2_interp = InterpolatedUnivariateSpline(
         0.5 * (_phi2_stat.bin_edges[:-1] + _phi2_stat.bin_edges[1:]), _phi2_stat.statistic
     )
-    
+
     _pm1_stat = binned_statistic(stream_data["phi1"], stream_data["pm1"], bins=np.linspace(-80, 0, 32))
     _pm1_interp = InterpolatedUnivariateSpline(
         0.5 * (_pm1_stat.bin_edges[:-1] + _pm1_stat.bin_edges[1:]), _pm1_stat.statistic, ext=3
     )
-    
+
     _pm2_stat = binned_statistic(stream_data["phi1"], stream_data["pm2"], bins=np.linspace(-80, 0, 32))
     _pm2_interp = InterpolatedUnivariateSpline(
         0.5 * (_pm2_stat.bin_edges[:-1] + _pm2_stat.bin_edges[1:]), _pm2_stat.statistic, ext=3
     )
-    
+
     _pm1_interp=InterpolatedUnivariateSpline(p.track.track.transform_to(p.track.stream_frame).phi1,
                                              p.track.track.transform_to(p.track.stream_frame).pm_phi1_cosphi2,
                                              ext=3)
     _pm2_interp=InterpolatedUnivariateSpline(p.track.track.transform_to(p.track.stream_frame).phi1,
                                              p.track.track.transform_to(p.track.stream_frame).pm_phi2,
                                              ext=3)
-    
+
     stream_init_p = {
         "ln_N": np.log(len(stream_data['phi1'])),
         "phi1": {
@@ -79,7 +78,6 @@ def stream_initialization(stream_data, p):
 
 
 def offtrack_initialization():
-    
     offtrack_init_p = {
         "ln_N": np.log(100),
         ("phi1", "phi2"): {
