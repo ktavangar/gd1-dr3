@@ -48,44 +48,49 @@ class BackgroundModel(Base, StreamModel):
     pm1_knots = get_grid(*Base.coord_bounds["phi1"], 10.0) # changed from 10 to 15 because of small scale features in pm2
     pm2_knots = get_grid(*Base.coord_bounds["phi1"], 15.0)
 
-    variables = {
-        "phi1": GridGMMVariable(
-            param_priors={
-                "zs": dist.Uniform(-8.0, 8.0).expand((phi1_locs.shape[0] - 1,)),
-            },
-            locs=phi1_locs,
-            scales=np.full_like(phi1_locs, 10.0),
-            coord_bounds=Base.phi1_lim,
-        ),
-        "phi2": UniformVariable(
-            param_priors={}, coord_bounds=Base.coord_bounds["phi2"]
-        ),
-        "pm1": Normal1DSplineMixtureVariable(
-            param_priors={
-                "w": dist.Uniform(0, 1).expand((pm1_knots.size,)),
-                "mean1": dist.Uniform(-20, 20).expand((pm1_knots.size,)),
-                "mean2": dist.Uniform(-20, 20).expand((pm1_knots.size,)),
-                "ln_std1": dist.Uniform(-2, 3).expand((pm1_knots.size,)),
-                "ln_std2": dist.Uniform(-2, 3).expand((pm1_knots.size,)),
-            },
-            knots=pm1_knots,
-            spline_ks={"w": 1},
-            coord_bounds=Base.coord_bounds.get("pm1"),
-        ),
-        "pm2": Normal1DSplineMixtureVariable(
-            param_priors={
-                "w": dist.Uniform(0, 1).expand((pm2_knots.size,)), # weight between two components
-                "mean1": dist.Uniform(-20, 20).expand((pm2_knots.size,)),
-                "mean2": dist.Uniform(-20, 20).expand((pm2_knots.size,)),
-                "ln_std1": dist.Uniform(-2, 3).expand((pm2_knots.size,)),
-                "ln_std2": dist.Uniform(-2, 3).expand((pm2_knots.size,)),
-            },
-            knots=pm2_knots,
-            spline_ks={"w": 1},
-            coord_bounds=Base.coord_bounds.get("pm2"),
-        ),
-    }
-
+    variables = {"phi1": None,
+                 "phi2": None,
+                 "pm1": None,
+                 "pm2": None,
+                }
+    # variables = {
+    #     "phi1": GridGMMVariable(
+    #         param_priors={
+    #             "zs": dist.Uniform(-8.0, 8.0).expand((phi1_locs.shape[0] - 1,)),
+    #         },
+    #         locs=phi1_locs,
+    #         scales=np.full_like(phi1_locs, 10.0),
+    #         coord_bounds=Base.phi1_lim,
+    #     ),
+    #     "phi2": UniformVariable(
+    #         param_priors={}, coord_bounds=Base.coord_bounds["phi2"]
+    #     ),
+    #     "pm1": Normal1DSplineMixtureVariable(
+    #         param_priors={
+    #             "w": dist.Uniform(0, 1).expand((pm1_knots.size,)),
+    #             "mean1": dist.Uniform(-20, 20).expand((pm1_knots.size,)),
+    #             "mean2": dist.Uniform(-20, 20).expand((pm1_knots.size,)),
+    #             "ln_std1": dist.Uniform(-2, 3).expand((pm1_knots.size,)),
+    #             "ln_std2": dist.Uniform(-2, 3).expand((pm1_knots.size,)),
+    #         },
+    #         knots=pm1_knots,
+    #         spline_ks={"w": 1},
+    #         coord_bounds=Base.coord_bounds.get("pm1"),
+    #     ),
+    #     "pm2": Normal1DSplineMixtureVariable(
+    #         param_priors={
+    #             "w": dist.Uniform(0, 1).expand((pm2_knots.size,)), # weight between two components
+    #             "mean1": dist.Uniform(-20, 20).expand((pm2_knots.size,)),
+    #             "mean2": dist.Uniform(-20, 20).expand((pm2_knots.size,)),
+    #             "ln_std1": dist.Uniform(-2, 3).expand((pm2_knots.size,)),
+    #             "ln_std2": dist.Uniform(-2, 3).expand((pm2_knots.size,)),
+    #         },
+    #         knots=pm2_knots,
+    #         spline_ks={"w": 1},
+    #         coord_bounds=Base.coord_bounds.get("pm2"),
+    #     ),
+    # }
+    
     data_required = {
         "pm1": {"x": "phi1", "y": "pm1", "y_err": "pm1_err"},
         "pm2": {"x": "phi1", "y": "pm2", "y_err": "pm2_err"},
@@ -215,129 +220,6 @@ class BackgroundModel(Base, StreamModel):
         }
         cls._data_required['phi2'] = {"x": "phi1", "y": "phi2"}
 
-    @classmethod
-    def bkg_update(cls, pawprint, data, knot_sep):
-        cls.phi1_lim, cls.coord_bounds, cls.default_grids = Base.setup(pawprint, data)
-
-        cls.phi1_locs = get_grid(*cls.phi1_lim, knot_sep, pad_num=1).reshape(-1, 1)
-        cls.pm1_knots = get_grid(*cls.coord_bounds["phi1"], knot_sep)
-        cls.pm2_knots = get_grid(*cls.coord_bounds["phi1"], knot_sep)
-
-        cls.variables = {
-            "phi1": GridGMMVariable(
-                param_priors={
-                    "zs": dist.Uniform(-8.0, 8.0).expand((cls.phi1_locs.shape[0] - 1,)),
-                },
-                locs=cls.phi1_locs,
-                scales=np.full_like(cls.phi1_locs, 10.0),
-                coord_bounds=cls.phi1_lim,
-            ),
-            "phi2": UniformVariable(
-                param_priors={}, coord_bounds=cls.coord_bounds["phi2"]
-            ),
-            "pm1": Normal1DSplineMixtureVariable(
-                param_priors={
-                    "w": dist.Uniform(0, 1).expand((cls.pm1_knots.size,)),
-                    "mean1": dist.Uniform(-20, 20).expand((cls.pm1_knots.size,)),
-                    "mean2": dist.Uniform(-20, 20).expand((cls.pm1_knots.size,)),
-                    "ln_std1": dist.Uniform(-2, 3).expand((cls.pm1_knots.size,)),
-                    "ln_std2": dist.Uniform(-2, 3).expand((cls.pm1_knots.size,)),
-                },
-                knots=cls.pm1_knots,
-                spline_ks={"w": 1},
-                coord_bounds=cls.coord_bounds.get("pm1"),
-            ),
-            "pm2": Normal1DSplineMixtureVariable(
-                param_priors={
-                    "w": dist.Uniform(0, 1).expand((cls.pm2_knots.size,)),
-                    "mean1": dist.Uniform(-20, 20).expand((cls.pm2_knots.size,)),
-                    "mean2": dist.Uniform(-20, 20).expand((cls.pm2_knots.size,)),
-                    "ln_std1": dist.Uniform(-2, 3).expand((cls.pm2_knots.size,)),
-                    "ln_std2": dist.Uniform(-2, 3).expand((cls.pm2_knots.size,)),
-                },
-                knots=cls.pm2_knots,
-                spline_ks={"w": 1},
-                coord_bounds=cls.coord_bounds.get("pm2"),
-            ),
-        }
-
-        cls.data_required = {
-            "pm1": {"x": "phi1", "y": "pm1", "y_err": "pm1_err"},
-            "pm2": {"x": "phi1", "y": "pm2", "y_err": "pm2_err"},
-        }
-
-    @classmethod
-    def bkg_update_pal5(cls, pawprint, data, knot_sep):
-        cls.phi1_lim, cls.coord_bounds, cls.default_grids = Base.setup(pawprint, data)
-
-        cls.phi1_locs = get_grid(*cls.phi1_lim, knot_sep, pad_num=1).reshape(-1, 1)
-        cls.pm1_knots = get_grid(*cls.coord_bounds["phi1"], knot_sep)
-        cls.pm2_knots = get_grid(*cls.coord_bounds["phi1"], knot_sep)
-
-        cls.phi2_knots = get_grid(*cls.phi1_lim, knot_sep)  # knots every 10º
-
-        cls.variables = {
-            "phi1": GridGMMVariable(
-                param_priors={
-                    "zs": dist.Uniform(-8.0, 8.0).expand((cls.phi1_locs.shape[0] - 1,)),
-                },
-                locs=cls.phi1_locs,
-                scales=np.full_like(cls.phi1_locs, 10.0),
-                coord_bounds=cls.phi1_lim,
-            ),
-            "phi2": Normal1DSplineVariable(
-                param_priors={
-                    "mean": dist.Uniform(-20,20).expand(cls.phi2_knots.shape),
-                    "ln_std": dist.Uniform(0.5,5).expand(cls.phi2_knots.shape),
-                },
-                knots=cls.phi2_knots,
-                # spline_ks = {"w":1},
-                coord_bounds=cls.coord_bounds["phi2"],
-            ),
-            # "phi2": Normal1DSplineMixtureVariable(
-            #     param_priors={
-            #         "w": dist.Uniform(0, 1).expand((cls.pm1_knots.size,)),
-            #         "mean1": dist.Uniform(5,20).expand(cls.phi2_knots.shape),
-            #         "mean2": dist.Uniform(-20,-5).expand(cls.phi2_knots.shape),
-            #         "ln_std1": dist.Uniform(2,5).expand(cls.phi2_knots.shape),
-            #         "ln_std2": dist.Uniform(2,5).expand(cls.phi2_knots.shape),
-            #     },
-            #     knots=cls.phi2_knots,
-            #     spline_ks = {"w":1},
-            #     coord_bounds=cls.coord_bounds["phi2"],
-            # ),
-            "pm1": Normal1DSplineMixtureVariable(
-                param_priors={
-                    "w": dist.Uniform(0, 1).expand((cls.pm1_knots.size,)),
-                    "mean1": dist.Uniform(-20, 20).expand((cls.pm1_knots.size,)),
-                    "mean2": dist.Uniform(-20, 20).expand((cls.pm1_knots.size,)),
-                    "ln_std1": dist.Uniform(-2, 3).expand((cls.pm1_knots.size,)),
-                    "ln_std2": dist.Uniform(-2, 3).expand((cls.pm1_knots.size,)),
-                },
-                knots=cls.pm1_knots,
-                spline_ks={"w": 1},
-                coord_bounds=cls.coord_bounds.get("pm1"),
-            ),
-            "pm2": Normal1DSplineMixtureVariable(
-                param_priors={
-                    "w": dist.Uniform(0, 1).expand((cls.pm2_knots.size,)),
-                    "mean1": dist.Uniform(-20, 20).expand((cls.pm2_knots.size,)),
-                    "mean2": dist.Uniform(-20, 20).expand((cls.pm2_knots.size,)),
-                    "ln_std1": dist.Uniform(-2, 3).expand((cls.pm2_knots.size,)),
-                    "ln_std2": dist.Uniform(-2, 3).expand((cls.pm2_knots.size,)),
-                },
-                knots=cls.pm2_knots,
-                spline_ks={"w": 1},
-                coord_bounds=cls.coord_bounds.get("pm2"),
-            ),
-        }
-
-        cls.data_required = {
-            "phi2": {"x": "phi1", "y": "phi2"},
-            "pm1": {"x": "phi1", "y": "pm1", "y_err": "pm1_err"},
-            "pm2": {"x": "phi1", "y": "pm2", "y_err": "pm2_err"},
-        }
-        cls._data_required['phi2'] = {"x": "phi1", "y": "phi2"}
 
 class StreamDensModel(Base, StreamModel):
     name = "stream"
