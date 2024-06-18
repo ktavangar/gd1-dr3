@@ -11,8 +11,8 @@ import scipy.ndimage as scn
 import scipy.optimize as sco
 from stream_membership.helpers import two_normal_mixture, two_truncated_normal_mixture
 
-from .gd1_model import GD1BackgroundModel, GD1StreamModel, w_to_z
-
+from .gd1_model import BackgroundModel, StreamDensModel#, w_to_z
+#updates made by switching from GD1BackgroundModel to BackgroundModel (and same for stream model)
 
 class Initializer:
     pass
@@ -26,8 +26,8 @@ class BackgroundInitializer(Initializer):
         if phi1_bins is None:
             # 5 degree bins in phi1
             phi1_bins = np.arange(
-                GD1BackgroundModel.coord_bounds["phi1"][0],
-                GD1BackgroundModel.coord_bounds["phi1"][1] + 1e-3,
+                BackgroundModel.coord_bounds["phi1"][0],
+                BackgroundModel.coord_bounds["phi1"][1] + 1e-3,
                 5.0,
             )
         self.phi1_bins = phi1_bins
@@ -41,12 +41,12 @@ class BackgroundInitializer(Initializer):
         log_n = np.log(scn.gaussian_filter(H, 2.0)) - np.log(dx)
 
         tmp = sci.InterpolatedUnivariateSpline(self._phi1x, log_n, ext=3)
-        knot_vals = tmp(GD1BackgroundModel.knots["ln_n0"])
+        knot_vals = tmp(BackgroundModel.knots["ln_n0"])
 
         if self.plot:
             fig, ax = plt.subplots(constrained_layout=True, figsize=(6, 4))
             ax.plot(self._phi1x, log_n, drawstyle="steps-mid")
-            ax.scatter(GD1BackgroundModel.knots["ln_n0"], knot_vals, color="tab:purple")
+            ax.scatter(BackgroundModel.knots["ln_n0"], knot_vals, color="tab:purple")
             ax.set_xlabel(r"$\phi_1$")
             ax.set_ylabel(r"$\ln n(\phi_1)$")
 
@@ -64,8 +64,8 @@ class BackgroundInitializer(Initializer):
 
             model = two_truncated_normal_mixture(
                 *p,
-                low=GD1BackgroundModel.coord_bounds["pm1"][0],
-                high=GD1BackgroundModel.coord_bounds["pm1"][1],
+                low=BackgroundModel.coord_bounds["pm1"][0],
+                high=BackgroundModel.coord_bounds["pm1"][1],
                 yerr=data_err
             )
             ln_prob = model.log_prob(data)
@@ -91,21 +91,21 @@ class BackgroundInitializer(Initializer):
         if self.plot:
             fig, ax = plt.subplots(constrained_layout=True, figsize=(6, 4))
 
-            grid = np.linspace(*GD1BackgroundModel.coord_bounds["pm1"], 128)
+            grid = np.linspace(*BackgroundModel.coord_bounds["pm1"], 128)
             ax.hist(self.data["pm1"], bins=grid, density=True)
 
             init_grid_vals = two_truncated_normal_mixture(
                 *x0_pm1,
-                low=GD1BackgroundModel.coord_bounds["pm1"][0],
-                high=GD1BackgroundModel.coord_bounds["pm1"][1],
+                low=BackgroundModel.coord_bounds["pm1"][0],
+                high=BackgroundModel.coord_bounds["pm1"][1],
                 yerr=0.0
             ).log_prob(grid)
             ax.plot(grid, np.exp(init_grid_vals), color="tab:green", label="init")
 
             _grid_vals = two_truncated_normal_mixture(
                 *res_pm1.x,
-                low=GD1BackgroundModel.coord_bounds["pm1"][0],
-                high=GD1BackgroundModel.coord_bounds["pm1"][1],
+                low=BackgroundModel.coord_bounds["pm1"][0],
+                high=BackgroundModel.coord_bounds["pm1"][1],
                 yerr=0.0
             ).log_prob(grid)
             ax.plot(grid, np.exp(_grid_vals), color="tab:red", label="opt")
@@ -113,7 +113,7 @@ class BackgroundInitializer(Initializer):
             ax.legend(loc="best")
 
         knot_vals = {}
-        for i, (name, size) in enumerate(GD1BackgroundModel.shapes["pm1"].items()):
+        for i, (name, size) in enumerate(BackgroundModel.shapes["pm1"].items()):
             knot_vals[name] = np.full(size, res_pm1.x[i])
 
         return knot_vals
@@ -162,7 +162,7 @@ class BackgroundInitializer(Initializer):
             ax.legend(loc="best")
 
         knot_vals = {}
-        for i, (name, size) in enumerate(GD1BackgroundModel.shapes["pm2"].items()):
+        for i, (name, size) in enumerate(BackgroundModel.shapes["pm2"].items()):
             knot_vals[name] = np.full(size, res_pm2.x[i])
 
         return knot_vals
@@ -172,13 +172,13 @@ class BackgroundInitializer(Initializer):
 
         init_p["ln_n0"] = self.init_ln_n0()
 
-        if "pm1" in GD1BackgroundModel.coord_names:
+        if "pm1" in BackgroundModel.coord_names:
             pp = self.init_pm1(**kwargs)
             if "w" in pp:
                 pp["z"] = w_to_z(pp.pop("w"))
             init_p["pm1"] = pp
 
-        if "pm2" in GD1BackgroundModel.coord_names:
+        if "pm2" in BackgroundModel.coord_names:
             pp = self.init_pm2(**kwargs)
             if "w" in pp:
                 pp["z"] = w_to_z(pp.pop("w"))
@@ -195,8 +195,8 @@ class StreamInitializer(Initializer):
         if phi1_bins is None:
             # 5 degree bins in phi1
             phi1_bins = np.arange(
-                GD1StreamModel.coord_bounds["phi1"][0],
-                GD1StreamModel.coord_bounds["phi1"][1] + 1e-3,
+                StreamDensModel.coord_bounds["phi1"][0],
+                StreamDensModel.coord_bounds["phi1"][1] + 1e-3,
                 5.0,
             )
         self.phi1_bins = phi1_bins
@@ -210,17 +210,17 @@ class StreamInitializer(Initializer):
         log_n = np.log(H) - np.log(dx)
 
         tmp = sci.InterpolatedUnivariateSpline(self._phi1x, log_n, k=1, ext=3)
-        knot_vals = tmp(GD1StreamModel.knots["ln_n0"])
+        knot_vals = tmp(StreamDensModel.knots["ln_n0"])
 
         if self.plot:
             fig, ax = plt.subplots(constrained_layout=True, figsize=(6, 4))
             ax.plot(self._phi1x, log_n)
-            ax.scatter(GD1StreamModel.knots["ln_n0"], knot_vals, color="tab:purple")
+            ax.scatter(StreamDensModel.knots["ln_n0"], knot_vals, color="tab:purple")
 
             interp_tmp = sci.InterpolatedUnivariateSpline(
-                GD1StreamModel.knots["ln_n0"],
+                StreamDensModel.knots["ln_n0"],
                 knot_vals,
-                k=GD1StreamModel.spline_ks["ln_n0"],
+                k=StreamDensModel.spline_ks["ln_n0"],
             )
             ax.plot(
                 self.phi1_bins,
@@ -237,8 +237,8 @@ class StreamInitializer(Initializer):
     def init_phi2(self, phi2_bins=None, **_):
         if phi2_bins is None:
             phi2_bins = np.arange(
-                GD1StreamModel.coord_bounds["phi2"][0],
-                GD1StreamModel.coord_bounds["phi2"][1] + 1e-3,
+                StreamDensModel.coord_bounds["phi2"][0],
+                StreamDensModel.coord_bounds["phi2"][1] + 1e-3,
                 0.5,
             )
 
@@ -255,7 +255,7 @@ class StreamInitializer(Initializer):
 
         knot_vals = {}
         knot_vals["mean"] = sci.InterpolatedUnivariateSpline(xc, yc[peak_idx], k=1)(
-            GD1StreamModel.knots["phi2"]
+            StreamDensModel.knots["phi2"]
         )
         knot_vals["ln_std"] = np.full_like(knot_vals["mean"], -1)
 
@@ -266,9 +266,9 @@ class StreamInitializer(Initializer):
             ax.plot(xc, yc[peak_idx], color="tab:green", label="init")
 
             interp_tmp = sci.InterpolatedUnivariateSpline(
-                GD1StreamModel.knots["phi2"],
+                StreamDensModel.knots["phi2"],
                 knot_vals["mean"],
-                k=GD1StreamModel.spline_ks["phi2"]["mean"],
+                k=StreamDensModel.spline_ks["phi2"]["mean"],
             )
             ax.plot(
                 self.phi1_bins,
@@ -289,7 +289,7 @@ class StreamInitializer(Initializer):
         H, xe, ye = np.histogram2d(
             self.data["phi1"],
             self.data["pm1"],
-            bins=(phi1_bins, np.arange(*GD1StreamModel.coord_bounds["pm1"], 0.1)),
+            bins=(phi1_bins, np.arange(*StreamDensModel.coord_bounds["pm1"], 0.1)),
         )
         xc = 0.5 * (xe[:-1] + xe[1:])
         yc = 0.5 * (ye[:-1] + ye[1:])
@@ -303,8 +303,8 @@ class StreamInitializer(Initializer):
         knot_vals = {}
         knot_vals["mean"] = sci.InterpolatedUnivariateSpline(
             xc[good_peaks], yc[peak_idx[good_peaks]], k=1
-        )(GD1StreamModel.knots["pm1"])
-        knot_vals["ln_std"] = np.full_like(GD1StreamModel.knots["pm1"], -3)
+        )(StreamDensModel.knots["pm1"])
+        knot_vals["ln_std"] = np.full_like(StreamDensModel.knots["pm1"], -3)
 
         if self.plot:
             fig, ax = plt.subplots(1, 1, figsize=(6, 4), constrained_layout=True)
@@ -312,10 +312,10 @@ class StreamInitializer(Initializer):
             ax.plot(xc, yc[peak_idx], color="tab:green")
 
             ax.scatter(
-                GD1StreamModel.knots["pm1"], knot_vals["mean"], color="tab:purple"
+                StreamDensModel.knots["pm1"], knot_vals["mean"], color="tab:purple"
             )
             interp_tmp = sci.InterpolatedUnivariateSpline(
-                GD1StreamModel.knots["pm1"], knot_vals["mean"], k=3
+                StreamDensModel.knots["pm1"], knot_vals["mean"], k=3
             )
             ax.plot(
                 self.phi1_bins,
@@ -349,8 +349,8 @@ class StreamInitializer(Initializer):
         knot_vals = {}
         knot_vals["mean"] = sci.InterpolatedUnivariateSpline(
             xc[good_peaks], yc[peak_idx[good_peaks]], k=1
-        )(GD1StreamModel.knots["pm2"])
-        knot_vals["ln_std"] = np.full_like(GD1StreamModel.knots["pm2"], -3)
+        )(StreamDensModel.knots["pm2"])
+        knot_vals["ln_std"] = np.full_like(StreamDensModel.knots["pm2"], -3)
 
         if self.plot:
             fig, ax = plt.subplots(1, 1, figsize=(6, 4), constrained_layout=True)
@@ -358,10 +358,10 @@ class StreamInitializer(Initializer):
             ax.plot(xc, yc[peak_idx], color="tab:green")
 
             ax.scatter(
-                GD1StreamModel.knots["pm2"], knot_vals["mean"], color="tab:purple"
+                StreamDensModel.knots["pm2"], knot_vals["mean"], color="tab:purple"
             )
             interp_tmp = sci.InterpolatedUnivariateSpline(
-                GD1StreamModel.knots["pm2"], knot_vals["mean"], k=3
+                StreamDensModel.knots["pm2"], knot_vals["mean"], k=3
             )
             ax.plot(
                 self.phi1_bins,
@@ -379,16 +379,16 @@ class StreamInitializer(Initializer):
 
         init_p["ln_n0"] = self.init_ln_n0()
 
-        if "phi2" in GD1StreamModel.coord_names:
+        if "phi2" in StreamDensModel.coord_names:
             init_p["phi2"] = self.init_phi2(**kwargs)
 
-        if "pm1" in GD1StreamModel.coord_names:
+        if "pm1" in StreamDensModel.coord_names:
             pp = self.init_pm1(**kwargs)
             if "w" in pp:
                 pp["z"] = w_to_z(pp.pop("w"))
             init_p["pm1"] = pp
 
-        if "pm2" in GD1StreamModel.coord_names:
+        if "pm2" in StreamDensModel.coord_names:
             pp = self.init_pm2(**kwargs)
             if "w" in pp:
                 pp["z"] = w_to_z(pp.pop("w"))
