@@ -145,10 +145,10 @@ def make_stream_model(cls, pawprint, data, knot_sep):
         "phi2": Normal1DSplineVariable(
             param_priors={
                 "mean": dist.Uniform(
-                    jnp.full_like(cls.phi2_knots, -4.0), jnp.full_like(cls.phi2_knots, 1.0)
+                    *cls.coord_bounds.get("phi2")).expand(cls.phi2_knots.shape
                 ),
                 "ln_std": dist.Uniform(
-                    jnp.full_like(cls.phi2_knots, -2.0), jnp.full_like(cls.phi2_knots, 0.5)
+                    jnp.full_like(cls.phi2_knots, -2.0), jnp.full_like(cls.phi2_knots, 2)
                 ),
             },
             knots=cls.phi2_knots,
@@ -198,26 +198,30 @@ def make_offtrack_model(cls, pawprint, data, dens_steps):
 
     # spar_steps = 5*dens_steps
 
-    cls.spar_locs = np.stack(
-        np.meshgrid(
-            get_grid(*cls.coord_bounds["phi1"], spar_steps[0], pad_num=1),
-            get_grid(*cls.coord_bounds["phi2"], spar_steps[1], pad_num=1),
-        )
-    ).T.reshape(-1, 2)
-    _mask = (
-        (cls.spar_locs[:, 0] >= cls.dens_phi1_lim[0])
-        & (cls.spar_locs[:, 0] <= cls.dens_phi1_lim[1])
-        & (cls.spar_locs[:, 1] >= cls.dens_phi2_lim[0])
-        & (cls.spar_locs[:, 1] <= cls.dens_phi2_lim[1])
-    )
-    cls.spar_locs = cls.spar_locs[~_mask]
+    # cls.spar_locs = np.stack(
+    #     np.meshgrid(
+    #         get_grid(*cls.coord_bounds["phi1"], spar_steps[0], pad_num=1),
+    #         get_grid(*cls.coord_bounds["phi2"], spar_steps[1], pad_num=1),
+    #     )
+    # ).T.reshape(-1, 2)
+    # _mask = (
+    #     (cls.spar_locs[:, 0] >= cls.dens_phi1_lim[0])
+    #     & (cls.spar_locs[:, 0] <= cls.dens_phi1_lim[1])
+    #     & (cls.spar_locs[:, 1] >= cls.dens_phi2_lim[0])
+    #     & (cls.spar_locs[:, 1] <= cls.dens_phi2_lim[1])
+    # )
+    # cls.spar_locs = cls.spar_locs[~_mask]
 
-    cls.phi12_locs = np.concatenate((cls.dens_locs, cls.spar_locs))
-    cls.phi12_scales = np.concatenate(
-        (np.full_like(cls.dens_locs, cls.dens_steps[0]), np.full_like(cls.spar_locs, cls.spar_steps[0]))
-    )
-    cls.phi12_scales[: cls.dens_locs.shape[0], 1] = cls.dens_steps[1]
-    cls.phi12_scales[cls.dens_locs.shape[0] :, 1] = cls.spar_steps[1]
+    # cls.phi12_locs = np.concatenate((cls.dens_locs, cls.spar_locs))
+    # cls.phi12_scales = np.concatenate(
+    #     (np.full_like(cls.dens_locs, cls.dens_steps[0]), np.full_like(cls.spar_locs, cls.spar_steps[0]))
+    # )
+    # cls.phi12_scales[: cls.dens_locs.shape[0], 1] = cls.dens_steps[1]
+    # cls.phi12_scales[cls.dens_locs.shape[0] :, 1] = cls.spar_steps[1]
+    
+    cls.phi12_locs = cls.dens_locs
+    cls.phi12_scales = (np.full_like(cls.phi12_locs, cls.dens_steps[0]))
+    cls.phi12_scales[:, 1] = cls.dens_steps[1]
 
     cls.variables = {
         ("phi1", "phi2"): GridGMMVariable(

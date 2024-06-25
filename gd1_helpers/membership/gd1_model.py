@@ -86,8 +86,8 @@ class OffTrackModel(Base, StreamModel):
     dens_phi1_lim = (-100, 20)
     dens_phi2_lim = (-8, 3.5)
 
-    dens_steps = np.array([3.0, 0.4]) # should find some optimal spacing here
-    spar_steps = 5*dens_steps
+    dens_steps = np.array([4.0, 0.4]) # should find some optimal spacing here
+    # spar_steps = 5*dens_steps
             
     dens_locs = np.stack(
         np.meshgrid(
@@ -96,26 +96,30 @@ class OffTrackModel(Base, StreamModel):
         )
     ).T.reshape(-1, 2)
 
-    spar_locs = np.stack(
-        np.meshgrid(
-            get_grid(*Base.coord_bounds["phi1"], spar_steps[0], pad_num=1),
-            get_grid(*Base.coord_bounds["phi2"], spar_steps[1], pad_num=1),
-        )
-    ).T.reshape(-1, 2)
-    _mask = (
-        (spar_locs[:, 0] >= dens_phi1_lim[0])
-        & (spar_locs[:, 0] <= dens_phi1_lim[1])
-        & (spar_locs[:, 1] >= dens_phi2_lim[0])
-        & (spar_locs[:, 1] <= dens_phi2_lim[1])
-    )
-    spar_locs = spar_locs[~_mask]
+    # spar_locs = np.stack(
+    #     np.meshgrid(
+    #         get_grid(*Base.coord_bounds["phi1"], spar_steps[0], pad_num=1),
+    #         get_grid(*Base.coord_bounds["phi2"], spar_steps[1], pad_num=1),
+    #     )
+    # ).T.reshape(-1, 2)
+    # _mask = (
+    #     (spar_locs[:, 0] >= dens_phi1_lim[0])
+    #     & (spar_locs[:, 0] <= dens_phi1_lim[1])
+    #     & (spar_locs[:, 1] >= dens_phi2_lim[0])
+    #     & (spar_locs[:, 1] <= dens_phi2_lim[1])
+    # )
+    # spar_locs = spar_locs[~_mask]
 
-    phi12_locs = np.concatenate((dens_locs, spar_locs))
-    phi12_scales = np.concatenate(
-        (np.full_like(dens_locs, dens_steps[0]), np.full_like(spar_locs, spar_steps[0]))
-    )
-    phi12_scales[: dens_locs.shape[0], 1] = dens_steps[1]
-    phi12_scales[dens_locs.shape[0] :, 1] = spar_steps[1]
+    # phi12_locs = np.concatenate((dens_locs, spar_locs))
+    # phi12_scales = np.concatenate(
+    #     (np.full_like(dens_locs, dens_steps[0]), np.full_like(spar_locs, spar_steps[0]))
+    # )
+    # phi12_scales[: dens_locs.shape[0], 1] = dens_steps[1]
+    # phi12_scales[dens_locs.shape[0] :, 1] = spar_steps[1]
+
+    phi12_locs = dens_locs
+    phi12_scales = np.full_like(dens_locs, dens_steps[0])
+    phi12_scales[:, 1] = dens_steps[1]
 
     variables = {("phi1", "phi2"): None,
                  "pm1": None,

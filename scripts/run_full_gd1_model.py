@@ -22,7 +22,6 @@ from scipy.interpolate import InterpolatedUnivariateSpline as IUS
 import sys
 sys.path.append('/Users/Tavangar/Work/gd1-dr3/')
 sys.path.append('/Users/Tavangar/Work/stream-membership')
-sys.path.append('/Users/Tavangar/Work/')
 sys.path.append('/Users/Tavangar/Work/CATS_workshop/cats/')
 from stream_membership import StreamMixtureModel
 from stream_membership.plot import plot_data_projections
@@ -32,6 +31,8 @@ from gd1_helpers.membership.gd1_model import (
     StreamDensModel,
     OffTrackModel,
 )
+
+from scripts.gd1_init import *
 
 from cats.pawprint.pawprint import Pawprint, Footprint2D
 from cats.CMD import Isochrone
@@ -67,7 +68,9 @@ if __name__ == '__main__':
     phi1_lim = (np.min(cat['phi1']), np.max(cat['phi1']))
     phi1_lim = [-100,20]
     
-    cat = cat[(cat['phi1'] < phi1_lim[1]) & (cat['phi1'] > phi1_lim[0])] # clunky to hard code this
+    cat = cat[(cat['phi1'] < phi1_lim[1]) & \
+              (cat['phi1'] > phi1_lim[0]) & \
+              (cat['phot_g_mean_mag'] < 20.5)] # clunky to hard code this maybe
 
     p = Pawprint.pawprint_from_galstreams(inputs[stream]['short_name'],
                                           inputs[stream]['pawprint_id'],
@@ -92,23 +95,21 @@ if __name__ == '__main__':
     #####################
     print('Setting up the model')
     
-    Base.setup(p, cat)
-    
     run_data_ = o.cat[pm_mask & (iso_mask | hb_mask)]
-    #run_data_ = o.cat[(iso_mask | hb_mask)]
     run_data = {k: np.array(run_data_[k], dtype="f8") for k in run_data_.colnames}
     
-    
     bkg_data_ = o.cat[pm_mask & (iso_mask | hb_mask) & ~o.on_skymask]
-    #bkg_data_ = o.cat[~o.on_skymask]
     bkg_data = {k: np.array(bkg_data_[k], dtype="f8") for k in bkg_data_.colnames}
+    
+    stream_data_ = o.cat[pmsel.pm12_mask & (iso_mask | hb_mask) & o.on_skymask]
+    stream_data = {k: np.array(stream_data_[k], dtype="f8") for k in stream_data_.colnames}
 
     ######################
     ## Background Model ##
     ######################
     print('Background Optimization')
     
-    BackgroundModel.bkg_update(pawprint=p, data=cat, knot_sep=knot_sep)
+    BkgModel = make_bkg_model(BackgroundModel, p, cat, knot_sep=knot_sep, phi2_bkg=False)
 
     bkg_init_p = {
         "ln_N": np.log(len(bkg_data['phi1'])),
@@ -130,9 +131,9 @@ if __name__ == '__main__':
         },
     }
     
-    background_init = BackgroundModel(bkg_init_p)
+    background_init = BkgModel(bkg_init_p)
 
-    bkg_opt_pars, bkg_info = BackgroundModel.optimize(
+    bkg_opt_pars, bkg_info = background_init.optimize(
         data=bkg_data,
         init_params=bkg_init_p,
         use_bounds=True,
@@ -144,29 +145,23 @@ if __name__ == '__main__':
     ## Stream Model ##
     ##################
     print('Stream Optimization')
-    StreamDensModel.stream_dens_update(pawprint=p, data=cat, knot_sep=knot_sep)
-    
-    stream_data_ = o.cat[pmsel.pm12_mask & (iso_mask | hb_mask) & o.on_skymask]
-    stream_data = {k: np.array(stream_data_[k], dtype="f8") for k in stream_data_.colnames}
+    StrModel = make_stream_model(StreamDensModel, p, cat, knot_sep=knot_sep)
 
+    # TODO: replace this with galstreams initialization
     _phi2_stat = binned_statistic(stream_data["phi1"], stream_data["phi2"], bins=np.linspace(phi1_lim[0], phi1_lim[1], 21))
-    _phi2_interp = IUS(0.5 * (_phi2_stat.bin_edges[:-1] + _phi2_stat.bin_edges[1:]),
-                       _phi2_stat.statistic)
-
+    _phi2_interp = IUS(
+        0.5 * (_phi2_stat.bin_edges[:-1] + _phi2_stat.bin_edges[1:]), _phi2_stat.statistic, ext=0, k=1
+    )
+    
     _pm1_stat = binned_statistic(stream_data["phi1"], stream_data["pm1"], bins=np.linspace(phi1_lim[0], phi1_lim[1], 32))
-    _pm1_interp = IUS(0.5 * (_pm1_stat.bin_edges[:-1] + _pm1_stat.bin_edges[1:]),
-                      _pm1_stat.statistic, ext=3)
-
+    _pm1_interp = IUS(
+        0.5 * (_pm1_stat.bin_edges[:-1] + _pm1_stat.bin_edges[1:]), _pm1_stat.statistic, ext=0, k=1
+    )
+    
     _pm2_stat = binned_statistic(stream_data["phi1"], stream_data["pm2"], bins=np.linspace(phi1_lim[0], phi1_lim[1], 32))
-    _pm2_interp = IUS(0.5 * (_pm2_stat.bin_edges[:-1] + _pm2_stat.bin_edges[1:]),
-                      _pm2_stat.statistic, ext=3)
-
-    _pm1_interp=IUS(p.track.track.transform_to(p.track.stream_frame).phi1,
-                    p.track.track.transform_to(p.track.stream_frame).pm_phi1_cosphi2,
-                    ext=3)
-    _pm2_interp=IUS(p.track.track.transform_to(p.track.stream_frame).phi1,
-                    p.track.track.transform_to(p.track.stream_frame).pm_phi2,
-                    ext=3)
+    _pm2_interp = IUS(
+        0.5 * (_pm2_stat.bin_edges[:-1] + _pm2_stat.bin_edges[1:]), _pm2_stat.statistic, ext=0, k=1
+    )
 
     stream_init_p = {
         "ln_N": np.log(len(stream_data['phi1'])),
@@ -187,9 +182,9 @@ if __name__ == '__main__':
         }
     }
 
-    stream_init = StreamDensModel(stream_init_p)
+    stream_init = StrModel(stream_init_p)
 
-    stream_opt_pars, stream_info = StreamDensModel.optimize(
+    stream_opt_pars, stream_info = stream_init.optimize(
         data=stream_data, init_params=stream_init_p, use_bounds=True
     )
     print(stream_info)
@@ -212,11 +207,12 @@ if __name__ == '__main__':
     ####################
     print('Offtrack Initialization')
 
-    OffTrackModel.offtrack_update(pawprint=p, data=cat, dens_steps=dens_steps)
+    OffModel = make_offtrack_model(OffTrackModel, p, cat, dens_steps=dens_steps)
+    
     offtrack_init_p = {
-        "ln_N": np.log(100),
+        "ln_N": np.log(500),
         ("phi1", "phi2"): {
-            "zs": np.zeros(OffTrackModel.phi12_locs.shape[0] - 1)
+            "zs": np.zeros(OffModel.phi12_locs.shape[0] - 1)
         },
         "pm1": stream_opt_pars["pm1"].copy(),
         "pm2": stream_opt_pars["pm2"].copy()
@@ -227,7 +223,7 @@ if __name__ == '__main__':
     ########################
     print('Full Model Optimization')
 
-    full_Components = [StreamDensModel, BackgroundModel, OffTrackModel]
+    full_Components =  [StrModel, BkgModel, OffModel]
     full_mix_params0 = {
         "stream": stream_opt_pars,
         "background": bkg_opt_pars,
