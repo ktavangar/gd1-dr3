@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import numpy as np
 import numpyro.distributions as dist
-from stream_membership import StreamModel
+from stream_membership import StreamModel, StreamMixtureModel
 from stream_membership.utils import get_grid
 from stream_membership.variables import (
     GridGMMVariable,
@@ -130,3 +130,8 @@ class OffTrackModel(Base, StreamModel):
         "pm1": {"x": "phi1", "y": "pm1", "y_err": "pm1_err"},
         "pm2": {"x": "phi1", "y": "pm2", "y_err": "pm2_err"},
     }
+
+class MixtureModel(Base, StreamMixtureModel):
+    components = [BackgroundModel, StreamDensModel, OffTrackModel]
+    
+    

@@ -253,3 +253,9 @@ def make_offtrack_model(cls, pawprint, data, dens_steps):
     }
 
     return cls
+
+def make_mixture_model(cls, Components):
+    
+    cls.components = [C for C in Components] # without calling on parameters yet
+    
+    return cls
