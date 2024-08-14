@@ -1,7 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
 import numpyro.distributions as dist
-from stream_membership import StreamModel
 from stream_membership.utils import get_grid
 from stream_membership.variables import (
     GridGMMVariable,
@@ -11,12 +10,7 @@ from stream_membership.variables import (
     Normal1DVariable
 )
 
-from gd1_helpers.membership.gd1_model import (
-    Base,
-    BackgroundModel,
-    StreamDensModel,
-    OffTrackModel,
-)
+from gd1_helpers.membership.gd1_model import StreamDensModel
 
 def setup_models(cls, pawprint, data):
     cls.phi1_lim = (np.min(data['phi1']), np.max(data['phi1']))
@@ -181,12 +175,13 @@ def make_stream_model(cls, pawprint, data, knot_sep):
 
     return cls
 
-def make_offtrack_model(cls, pawprint, data, dens_steps):
+def make_offtrack_model(cls, pawprint, data, dens_steps, StrModel):
     '''
     dens_steps: array - [phi1_dens_steps, phi2_dens_steps]
     '''
     
     cls = setup_models(cls, pawprint, data)
+    cls.dens_phi1_lim = (np.min(data['phi1']), np.max(data['phi1']))
     cls.dens_phi2_lim = (np.min(data['phi2']), np.max(data['phi2']))
     
     cls.dens_locs = np.stack(
@@ -242,8 +237,8 @@ def make_offtrack_model(cls, pawprint, data, dens_steps):
                 ),
             ),
         ),
-        "pm1": StreamDensModel.variables["pm1"],
-        "pm2": StreamDensModel.variables["pm2"],
+        "pm1": StrModel.variables["pm1"],
+        "pm2": StrModel.variables["pm2"],
     }
 
     cls.data_required = {

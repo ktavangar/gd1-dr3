@@ -83,18 +83,18 @@ class OffTrackModel(Base, StreamModel):
 
     ln_N_dist = dist.Uniform(-5, 10)
 
-    dens_phi1_lim = (-100, 20)
-    dens_phi2_lim = (-8, 3.5)
+    # dens_phi1_lim = (-100, 20)
+    # dens_phi2_lim = (-8, 3.5)
 
-    dens_steps = np.array([4.0, 0.4]) # should find some optimal spacing here
-    # spar_steps = 5*dens_steps
+    # dens_steps = np.array([4.0, 0.4]) # should find some optimal spacing here
+    # # spar_steps = 5*dens_steps
             
-    dens_locs = np.stack(
-        np.meshgrid(
-            np.arange(dens_phi1_lim[0], dens_phi1_lim[1] + 1e-3, dens_steps[0]),
-            np.arange(dens_phi2_lim[0], dens_phi2_lim[1] + 1e-3, dens_steps[1]),
-        )
-    ).T.reshape(-1, 2)
+    # dens_locs = np.stack(
+    #     np.meshgrid(
+    #         np.arange(dens_phi1_lim[0], dens_phi1_lim[1] + 1e-3, dens_steps[0]),
+    #         np.arange(dens_phi2_lim[0], dens_phi2_lim[1] + 1e-3, dens_steps[1]),
+    #     )
+    # ).T.reshape(-1, 2)
 
     # spar_locs = np.stack(
     #     np.meshgrid(
@@ -117,9 +117,9 @@ class OffTrackModel(Base, StreamModel):
     # phi12_scales[: dens_locs.shape[0], 1] = dens_steps[1]
     # phi12_scales[dens_locs.shape[0] :, 1] = spar_steps[1]
 
-    phi12_locs = dens_locs
-    phi12_scales = np.full_like(dens_locs, dens_steps[0])
-    phi12_scales[:, 1] = dens_steps[1]
+    # phi12_locs = dens_locs
+    # phi12_scales = np.full_like(dens_locs, dens_steps[0])
+    # phi12_scales[:, 1] = dens_steps[1]
 
     variables = {("phi1", "phi2"): None,
                  "pm1": None,
