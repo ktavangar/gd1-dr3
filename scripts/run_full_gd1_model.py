@@ -103,12 +103,9 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     stream_data_ = iso_obj.cat[pmsel.pm12_mask & (iso_mask | hb_mask) & iso_obj.on_skymask]
     stream_data = {k: jnp.array(stream_data_[k], dtype="f4") for k in stream_data_.colnames}
 
-    coord_bounds, plot_grids = init_stream.get_bounds_and_grids(run_data, pawprint)
+    coord_bounds, _ = init_stream.get_bounds_and_grids(run_data, pawprint)
     
     phi1_lim = coord_bounds['phi1']
-    phi2_lim = coord_bounds['phi2']
-    pm1_lim  = coord_bounds['pm1']
-    pm2_lim  = coord_bounds['pm2']
 
     ##########################################
     ## Create and Optimize Background Model ##
