@@ -1,5 +1,5 @@
 import jax
-# jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 import numpyro
@@ -95,20 +95,17 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     #####################
     
     run_data_ = iso_obj.cat[pm_mask & (iso_mask | hb_mask)]
-    run_data = {k: jnp.array(run_data_[k], dtype="f4") for k in run_data_.colnames}
+    run_data = {k: jnp.array(run_data_[k], dtype="f8") for k in run_data_.colnames}
     
     bkg_data_ = iso_obj.cat[pm_mask & (iso_mask | hb_mask) & ~iso_obj.on_skymask]
-    bkg_data = {k: jnp.array(bkg_data_[k], dtype="f4") for k in bkg_data_.colnames}
+    bkg_data = {k: jnp.array(bkg_data_[k], dtype="f8") for k in bkg_data_.colnames}
     
     stream_data_ = iso_obj.cat[pmsel.pm12_mask & (iso_mask | hb_mask) & iso_obj.on_skymask]
-    stream_data = {k: jnp.array(stream_data_[k], dtype="f4") for k in stream_data_.colnames}
+    stream_data = {k: jnp.array(stream_data_[k], dtype="f8") for k in stream_data_.colnames}
 
-    coord_bounds, plot_grids = init_stream.get_bounds_and_grids(run_data, pawprint)
+    coord_bounds, _ = init_stream.get_bounds_and_grids(run_data, pawprint)
     
     phi1_lim = coord_bounds['phi1']
-    phi2_lim = coord_bounds['phi2']
-    pm1_lim  = coord_bounds['pm1']
-    pm2_lim  = coord_bounds['pm2']
 
     ##########################################
     ## Create and Optimize Background Model ##
@@ -320,8 +317,8 @@ if __name__ == '__main__':
     sys.argv[2] : stream knot spacings for phi1, phi2, pm1, pm2 (MUST be integers as currently constructed)
     sys.argv[3] : list of offtrack separations between the nodes in [phi1, phi2]
     '''
-    bkg_knot_spacings = jnp.array(json.loads(sys.argv[1]), dtype='int32')
-    stream_knot_spacings = jnp.array(json.loads(sys.argv[2]), dtype='int32')
+    bkg_knot_spacings = jnp.array(json.loads(sys.argv[1]), dtype='int')
+    stream_knot_spacings = jnp.array(json.loads(sys.argv[2]), dtype='int')
     offtrack_dx = jnp.array(json.loads(sys.argv[3]))
 
     ## Create filenames for checking later
