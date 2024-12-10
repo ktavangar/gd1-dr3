@@ -77,7 +77,8 @@ def make_bkg_model_component(knot_spacings, n_pm_mixture, coord_bounds, data):
                     dist.Dirichlet(jnp.ones(len(bkg_phi1_knots))),
                 ),
                 "locs": bkg_phi1_knots.reshape(1, -1),
-                "scales": dist.HalfNormal(phi1_knot_spacing/2),
+                "scales": dist.TruncatedNormal(loc=0.5*phi1_knot_spacing, scale=0.5*phi1_knot_spacing,
+                                               low=0.1*phi1_knot_spacing).expand([bkg_phi1_knots.shape[0]]),
                 "low":  jnp.array([phi1_lim[0]])[:, None],
                 "high": jnp.array([phi1_lim[1]])[:, None],                  
             },
@@ -132,7 +133,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data):
     phi1_knot_spacing, phi2_knot_spacing, pm1_knot_spacing, pm2_knot_spacing = knot_spacings
 
     stream_phi1_knots = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, phi1_knot_spacing)
-    stream_phi2_knots = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, phi1_knot_spacing)
+    stream_phi2_knots = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, phi2_knot_spacing)
     stream_pm1_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm1_knot_spacing)
     stream_pm2_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm2_knot_spacing)
 
@@ -156,14 +157,15 @@ def make_stream_model_component(knot_spacings, coord_bounds, data):
                     dist.Dirichlet(jnp.ones(len(stream_phi1_knots))),
                 ),
                 "locs": stream_phi1_knots.reshape(1, -1),
-                "scales": dist.HalfNormal(5.0),
+                "scales": dist.TruncatedNormal(loc=0.5*phi1_knot_spacing, scale=0.5*phi1_knot_spacing,
+                                               low=0.1*phi1_knot_spacing).expand([stream_phi1_knots.shape[0]]),
                 "low": jnp.array([phi1_lim[0]])[:, None],
                 "high": jnp.array([phi1_lim[1]])[:, None],
             },
             "phi2": {
                 # "loc_vals": dist.Uniform(*phi2_lim).expand([stream_phi2_knots.shape[0]]),
                 "loc_vals": dist.Normal(loc=eval_interp_phi2, scale=1),
-                "scale_vals": dist.HalfNormal(0.5).expand([stream_phi2_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=0.5,scale=0.5,low=0.05).expand([stream_phi2_knots.shape[0]]),
                 "knots": stream_phi2_knots,
                 "x": data["phi1"],
                 "low": phi2_lim[0],
@@ -174,7 +176,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data):
             "pm1": {
                 # "loc_vals": dist.Uniform(*pm1_lim).expand([stream_pm1_knots.shape[0]]),
                 "loc_vals": dist.Normal(loc=eval_interp_pm1, scale=2),
-                "scale_vals": dist.HalfNormal(0.5).expand([stream_pm1_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=0.5,scale=0.5,low=0.05).expand([stream_pm1_knots.shape[0]]),
                 "knots": stream_pm1_knots,
                 "x": data["phi1"],
                 "low": pm1_lim[0],
@@ -186,7 +188,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data):
             "pm2": {
                 # "loc_vals": dist.Uniform(*pm2_lim).expand([stream_pm2_knots.shape[0]]),
                 "loc_vals": dist.Normal(loc=eval_interp_pm2, scale=2),
-                "scale_vals": dist.HalfNormal(0.5).expand([stream_pm2_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=0.5,scale=0.5,low=0.05).expand([stream_pm2_knots.shape[0]]),
                 "knots": stream_pm2_knots,
                 "x": data["phi1"],
                 "low": pm2_lim[0],
@@ -223,18 +225,8 @@ def make_offtrack_model_component(offtrack_dx, stream_model, coord_bounds):
     axis=-1,
     ).reshape(-1, 2)
 
-    # # Remove nodes in areas we don't have data:
-    # offtrack_node_mask = np.ones(offtrack_phi12_locs.shape[0], dtype=bool)
-    # pt1 = (-55, 0)
-    # pt2 = (-40, 2)
-    # m = (pt2[1] - pt1[1]) / (pt2[0] - pt1[0])
-    # offtrack_node_mask &= offtrack_phi12_locs[:, 1] < (
-    #     m * (offtrack_phi12_locs[:, 0] - pt1[0]) + pt1[1]
-    # )
-    # offtrack_node_mask &= offtrack_phi12_locs[:, 1] > (
-    #     m * (offtrack_phi12_locs[:, 0] - pt1[0]) + pt1[1] - 4.0
-    # )
-
+    ## NOTE: This model is tide to the stream model for the proper motions.
+    ##        If they should not be tied, update the parameters either here or after calling it
     offtrack_model = ModelComponent(
         name="offtrack",
         coord_distributions={
@@ -246,12 +238,12 @@ def make_offtrack_model_component(offtrack_dx, stream_model, coord_bounds):
             ("phi1", "phi2"): {
                 "mixing_distribution": (
                     dist.Categorical,
-                    dist.Dirichlet(jnp.full(offtrack_phi12_locs.shape[0], 0.5)),
+                    dist.Dirichlet(jnp.full(offtrack_phi12_locs.shape[0], 1)),
                 ),
                 "locs": offtrack_phi12_locs.T,
                 "scales":
                     # dist.HalfNormal(jnp.array([offtrack_phi1_dx, offtrack_phi2_dx])[:, None]).expand(offtrack_phi12_locs.T.shape), 
-                    dist.TruncatedNormal(loc=0.5*jnp.array(offtrack_dx)[:, None], scale=0.5, 
+                    dist.TruncatedNormal(loc=jnp.array(offtrack_dx)[:, None], scale=jnp.array(offtrack_dx)[:, None], 
                                          low=0.1*jnp.array(offtrack_dx)[:, None]).expand(offtrack_phi12_locs.T.shape),
                 "low": jnp.array([phi1_lim[0], phi2_lim[0]])[:, None],
                 "high": jnp.array([phi1_lim[1], phi2_lim[1]])[:, None],

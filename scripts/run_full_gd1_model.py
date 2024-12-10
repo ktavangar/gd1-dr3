@@ -18,7 +18,6 @@ from pathlib import Path
 
 import sys
 sys.path.append('/Users/Tavangar/Work/gd1-dr3/scripts/')
-sys.path.append('/Users/Tavangar/Work/CATS_workshop/cats/')
 
 import initialize_stream as init_stream
 
@@ -44,29 +43,34 @@ def run_CATS(data, stream_name, phi1_lim):
     pawprint.pmprint, pm_mask = rough_pm_poly(pawprint, cat, buffer=2)
     
     # Create the CMD cuts
-    iso_obj = Isochrone(cat, inputs[stream_name], pawprint=pawprint)
-    _, iso_mask, _, hb_mask, pprint = iso_obj.simpleSln(maxmag=22, mass_thresh=0.83)
+    iso_obj_ = Isochrone(cat, inputs[stream_name], pawprint=pawprint)
+    _, _, _, _, pprint = iso_obj_.simpleSln(maxmag=22, mass_thresh=0.83)
     
     pmsel = ProperMotionSelection(cat, inputs[stream_name], pprint,
                                   n_dispersion_phi1=3, n_dispersion_phi2=3, cutoff=0.1)
+
+    iso_obj = Isochrone(cat, inputs[stream_name], pawprint=pmsel.pawprint,)
+    _, iso_mask, _, hb_mask, pprint = iso_obj.simpleSln(22, mass_thresh=0.83)
+
     
     ##### rough pm cut to start with (this comes only from the galstreams proper motion tracks)
     pawprint.pmprint, pm_mask = rough_pm_poly(pawprint, cat, buffer=2)
 
     return pawprint, iso_obj, iso_mask, hb_mask, pmsel, pm_mask
 
-def run_SVI(model, init_params, data, num_steps, keys=jax.random.split(jax.random.PRNGKey(42), num=2)):
-    optimizer = numpyro.optim.Adam(1e-2)
-    guide = AutoNormal(
+def run_SVI(model, init_params, data, err=None, num_steps=10_000, GuideFunction=AutoNormal, keys=jax.random.split(jax.random.PRNGKey(42), num=2), 
+            learning_rate=1e-2, num_particles=1):
+    optimizer = numpyro.optim.ClippedAdam(learning_rate, eps=1e-8) # consider using optax for flexible learning rate scheduling
+    
+    guide = GuideFunction(
         model, init_loc_fn=numpyro.infer.init_to_value(values=init_params)
     )
-    MAP_svi = SVI(model, guide, optimizer, Trace_ELBO())
+    MAP_svi = SVI(model, guide, optimizer, Trace_ELBO(num_particles=num_particles))
 
     with numpyro.validation_enabled(), jax.debug_nans():
-        init_state = MAP_svi.init(keys[0], init_params=init_params, data=data)
+        init_state = MAP_svi.init(keys[0], init_params=init_params, data=data, err=err)
         MAP_svi_results = MAP_svi.run(
-        rng_key=keys[1], num_steps=num_steps, init_state=init_state, data=data,
-        )
+        rng_key=keys[1], num_steps=num_steps, init_state=init_state, data=data, err=err)
         
     return MAP_svi_results, guide
 
@@ -74,7 +78,7 @@ def get_svi_params(model, data, svi_results, guide, num_samples=1, key=jax.rando
 
     pred_dist = Predictive(guide, params=svi_results.params, num_samples=num_samples)
     pars_ = pred_dist(key, data=data)
-    pars = {k: jnp.median(v, axis=0) for k, v in pars_.items()}
+    pars = {k: jnp.median(v, axis=0) for k, v in pars_.items() if (k != '_auto_latent' and k != 'mixture:modeldata')}
     pars_expanded = model.expand_numpyro_params(pars)
 
     return pars_expanded
@@ -85,27 +89,43 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     ## Setup from CATS ##
     #####################
     print('Setting up the model')
-    
-    data = at.Table.read("/Users/Tavangar/Work/CATS_Workshop/cats/data/joined-GD-1.fits")
 
-    pawprint,iso_obj,iso_mask,hb_mask,pmsel,pm_mask = run_CATS(data, stream_name='GD-1', phi1_lim=[-100,20])
+    try:
+        with open('/Users/Tavangar/Work/gd1-dr3/data/post_cats_data.pkl', 'rb') as input_file_:
+            post_cats = pickle.load(input_file_)
+        run_data_ = post_cats['run_data']
+        bkg_data_ = post_cats['bkg_data']
+        stream_data_ = post_cats['stream_data']
+        pawprint = post_cats['pawprint']
+    except:
+        data = at.Table.read("/Users/Tavangar/Work/CATS_Workshop/cats/data/joined-GD-1.fits")
+    
+        pawprint,iso_obj,iso_mask,hb_mask,pmsel,pm_mask = run_CATS(data, stream_name='GD-1', phi1_lim=[-100,20])
+        run_data_ = iso_obj.cat[pm_mask & (iso_mask | hb_mask)]
+        bkg_data_ = iso_obj.cat[pm_mask & (iso_mask | hb_mask) & ~iso_obj.on_skymask]
+        stream_data_ = iso_obj.cat[pmsel.pm12_mask & (iso_mask | hb_mask) & iso_obj.on_skymask]
 
     #####################
     ## Setup the Model ##
     #####################
     
-    run_data_ = iso_obj.cat[pm_mask & (iso_mask | hb_mask)]
-    run_data = {k: jnp.array(run_data_[k], dtype="f8") for k in run_data_.colnames}
+    run_data = {k: jnp.array(run_data_[k], dtype="f8") for k in ['phi1', 'phi2', 'pm1', 'pm2']}#run_data_.colnames}
+    run_data_err = {'pm1': jnp.array(run_data_['pm1_error'], dtype="f8"),
+                    'pm2': jnp.array(run_data_['pm2_error'], dtype="f8")}
     
-    bkg_data_ = iso_obj.cat[pm_mask & (iso_mask | hb_mask) & ~iso_obj.on_skymask]
-    bkg_data = {k: jnp.array(bkg_data_[k], dtype="f8") for k in bkg_data_.colnames}
+    bkg_data = {k: jnp.array(bkg_data_[k], dtype="f8") for k in ['phi1', 'phi2', 'pm1', 'pm2']}#bkg_data_.colnames}
+    bkg_data_err = {'pm1': jnp.array(bkg_data_['pm1_error'], dtype="f8"),
+                    'pm2': jnp.array(bkg_data_['pm2_error'], dtype="f8")}
     
-    stream_data_ = iso_obj.cat[pmsel.pm12_mask & (iso_mask | hb_mask) & iso_obj.on_skymask]
-    stream_data = {k: jnp.array(stream_data_[k], dtype="f8") for k in stream_data_.colnames}
+    stream_data = {k: jnp.array(stream_data_[k], dtype="f8") for k in ['phi1', 'phi2', 'pm1', 'pm2']}#stream_data_.colnames}
+    stream_data_err = {'pm1': jnp.array(stream_data_['pm1_error'], dtype="f8"),
+                       'pm2': jnp.array(stream_data_['pm2_error'], dtype="f8")}
 
     coord_bounds, _ = init_stream.get_bounds_and_grids(run_data, pawprint)
     
     phi1_lim = coord_bounds['phi1']
+
+    guide_function = AutoNormal
 
     ##########################################
     ## Create and Optimize Background Model ##
@@ -131,7 +151,7 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         bkg_init_params = {
             "phi1": {
                 "mixing_distribution": jnp.ones(n_phi1_knots) / n_phi1_knots,
-                "scales": 0.5*bkg_knot_spacings[0]
+                "scales": jnp.full(n_phi1_knots, bkg_knot_spacings[0])
             },
             "phi2": {},
             "pm1": {
@@ -147,8 +167,9 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         }
     
         keys = jax.random.split(jax.random.PRNGKey(42), num=2)
-        bkg_svi_results, bkg_guide = run_SVI(bkg_model, bkg_init_params, bkg_data, 
-                                             num_steps=50_000, keys=keys)
+        bkg_svi_results, bkg_guide = run_SVI(bkg_model, bkg_init_params, bkg_data, bkg_data_err,
+                                             num_steps=20_000, GuideFunction=guide_function, keys=keys,
+                                             learning_rate=1e-3, num_particles=5)
         bkg_dict = {'svi_results': bkg_svi_results,
                     'guide': bkg_guide,
                     'bkg_knot_spacings': bkg_knot_spacings
@@ -188,7 +209,7 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
             "phi1": {
                 "mixing_distribution": jnp.ones(len(stream_phi1_knots))
                 / len(stream_phi1_knots),
-                "scales": 10.0,
+                "scales": jnp.full(stream_phi1_knots.shape[0], stream_knot_spacings[0]),
             },
             "phi2": {
                 "loc_vals": eval_interp_phi2,
@@ -205,8 +226,9 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         }
     
         keys = jax.random.split(jax.random.PRNGKey(42), num=2)
-        stream_svi_results, stream_guide = run_SVI(stream_model, stream_init_params, stream_data, 
-                                                   num_steps=100_000, keys=keys)
+        stream_svi_results, stream_guide = run_SVI(stream_model, stream_init_params, stream_data, stream_data_err,
+                                                   num_steps=50_000, GuideFunction=guide_function, keys=keys,
+                                                   learning_rate=1e-3, num_particles=10)
         
         stream_dict = {'svi_results': stream_svi_results,
                        'guide': stream_guide,
@@ -246,8 +268,9 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         packed_params["mixture"] = jnp.stack([v for v in run_data.values()], axis=-1)
     
         keys = jax.random.split(jax.random.PRNGKey(42), num=2)
-        no_off_svi_results, no_off_guide = run_SVI(stream_bkg_mm, packed_params, run_data, 
-                                                   num_steps=5_000, keys=keys)
+        no_off_svi_results, no_off_guide = run_SVI(stream_bkg_mm, packed_params, run_data, run_data_err,
+                                                   num_steps=15_000, GuideFunction=guide_function, keys=keys,
+                                                   learning_rate=1e-2, num_particles=3)
         
         no_off_dict = {'svi_results': no_off_svi_results,
                        'guide': no_off_guide,
@@ -270,6 +293,31 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     
     offtrack_model, offtrack_phi12_locs = init_stream.make_offtrack_model_component(offtrack_dx, stream_model, coord_bounds)
 
+    ## Untie the offtrack model and create tight priors around stream+background results instead
+    ##  This can't be splines since I wouldn't expect this to vary continuously
+    offtrack_model.coord_parameters['pm1']['loc_vals'] = dist.TruncatedNormal(
+        loc=no_off_params['stream']['pm1']['loc_vals'],
+        scale=no_off_params['stream']['pm1']['scale_vals'],
+        low=no_off_params['stream']['pm1']['loc_vals']-3*no_off_params['stream']['pm1']['scale_vals'],
+        high=no_off_params['stream']['pm1']['loc_vals']+3*no_off_params['stream']['pm1']['scale_vals']
+        )
+    offtrack_model.coord_parameters['pm2']['loc_vals'] = dist.TruncatedNormal(
+        loc=no_off_params['stream']['pm2']['loc_vals'],
+        scale=no_off_params['stream']['pm2']['scale_vals'],
+        low=no_off_params['stream']['pm2']['loc_vals']-3*no_off_params['stream']['pm2']['scale_vals'],
+        high=no_off_params['stream']['pm2']['loc_vals']+3*no_off_params['stream']['pm2']['scale_vals'])
+    
+    offtrack_model.coord_parameters['pm1']['scale_vals'] = dist.TruncatedNormal(
+        loc=no_off_params['stream']['pm1']['scale_vals'],
+        scale=no_off_params['stream']['pm1']['scale_vals'],
+        low=0, high=3*no_off_params['stream']['pm1']['scale_vals'])
+    offtrack_model.coord_parameters['pm2']['scale_vals'] = dist.TruncatedNormal(
+        loc=no_off_params['stream']['pm2']['scale_vals'],
+        scale=no_off_params['stream']['pm2']['scale_vals'],
+        low=0, high=3*no_off_params['stream']['pm2']['scale_vals'])
+    offtrack_model.coord_parameters['pm1']['x'] = run_data['phi1']
+    offtrack_model.coord_parameters['pm2']['x'] = run_data['phi1']
+
 
     _init_prob = jnp.ones(len(offtrack_phi12_locs))
     _init_prob /= _init_prob.sum()
@@ -283,23 +331,27 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         "pm2": no_off_params['stream']['pm2'],
     }
 
-    mm = ComponentMixtureModel(dist.Dirichlet(jnp.array([1.0, 1.0, 2.0])),
+    stream_probs = no_off_params['mixture-probs'][-1]
+    off_probs = 0.25*stream_probs
+    bkg_probs = 1-stream_probs-off_probs
+    mm = ComponentMixtureModel(dist.Dirichlet(jnp.array([1.0, 1.0, 1.0])),
                                components=[bkg_model_mm, stream_model_mm, offtrack_model],
-                               tied_coordinates={"offtrack": {"pm1": "stream", "pm2": "stream"}},
+                            #    tied_coordinates={"offtrack": {"pm1": "stream", "pm2": "stream"}},
                               )
 
     mm_init_params = {
         "background": no_off_params["background"],
-        "stream": no_off_params['stream'], # take from stream model rather than stream+background so that it doesn't have the spur
+        "stream": no_off_params['stream'],
         "offtrack": offtrack_init_params,
     }
     mm_packed_params = mm.pack_params(mm_init_params)
-    mm_packed_params["mixture-probs"] = jnp.array([0.97, 0.02, 0.01])
+    mm_packed_params["mixture-probs"] = jnp.array([bkg_probs, stream_probs, off_probs])
     mm_packed_params["mixture"] = jnp.stack([v for v in run_data.values()], axis=-1)
 
     keys = jax.random.split(jax.random.PRNGKey(42), num=2)
-    full_svi_results, full_guide = run_SVI(mm, mm_packed_params, run_data, 
-                                           num_steps=5_000, keys=keys)
+    full_svi_results, full_guide = run_SVI(mm, mm_packed_params, run_data, run_data_err,
+                                           num_steps=20_000, GuideFunction=guide_function, keys=keys,
+                                           learning_rate=1e-2, num_particles=3)
 
     results = {'svi_results': full_svi_results,
                'guide': full_guide,
