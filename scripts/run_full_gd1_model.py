@@ -8,7 +8,9 @@ from numpyro.infer import SVI, Predictive, Trace_ELBO
 from numpyro.infer.autoguide import AutoDelta, AutoNormal, AutoDiagonalNormal
 import optax
 
-from stream_membership import ComponentMixtureModel
+from stream_membership import ComponentMixtureModel, ModelComponent
+from stream_membership.distributions import IndependentGMM, TruncatedNormalSpline, DirichletSpline, TruncatedNormal1DSplineMixture
+from stream_membership.plot import plot_data_projections
 
 import astropy.table as at
 import astropy.units as u
@@ -115,6 +117,83 @@ def get_svi_params(model, data, svi_results, guide, num_samples=1, key=jax.rando
     pars_expanded = model.expand_numpyro_params(pars)
 
     return pars_expanded
+
+def make_lp_dict(model, data, data_err, params):
+    
+    lp_dict = {} # create dictionary of log probabilities for each component
+    
+    for n_comp, component in enumerate(model.components):
+    
+        ## Get distributions for every coordinate in the component
+        dists = component.make_dists(params[component.name])
+    
+        ## Create empty array of log probabilities for each data point and coordinate
+        component_lp_stack = jnp.empty((len(dists), len(data['phi1'])))
+    
+        for i, (coord_name, dist_) in enumerate(dists.items()):
+            if isinstance(coord_name, tuple): # (phi1, phi2) offtrack
+                _data = jnp.stack([data[k] for k in coord_name], axis=-1)
+                _errors = jnp.stack([data_err[k] for k in coord_name], axis=-1)   # Include errors
+            else:
+                _data = jnp.asarray(data[coord_name])
+                _errors = jnp.asarray(data_err[coord_name])  # Include errors
+            
+            if isinstance(dist_, (IndependentGMM, dist.Uniform)):
+                # IndependentGMM is only used for position space at the moment so ignoring errors is fine
+                variable_lp  = dist_.log_prob(value=_data)
+                
+            elif isinstance(dist_, TruncatedNormalSpline): # One truncated spline
+                # Get the spline mean and scale at every data point's phi1
+                #  the scale should the the rms of the model scale and the error on that point
+                spline_mean = dist_._loc_spl(data['phi1'])
+                adjusted_spline_scale = jnp.sqrt(dist_._scale_spl(data['phi1'])**2 + _errors**2)
+    
+                # Get lower and upper bounds of truncated normal (in terms of number of stds from mean)
+                lower = (dist_.low - spline_mean) / adjusted_spline_scale
+                higher = (dist_.high - spline_mean) / adjusted_spline_scale
+                
+                # Create a truncated normal per data point
+                variable_lp = jax.scipy.stats.truncnorm.logpdf(
+                                    x=_data, 
+                                    loc=spline_mean, 
+                                    scale=adjusted_spline_scale,
+                                    a=lower,
+                                    b=higher
+                                )
+            elif isinstance(dist_, TruncatedNormal1DSplineMixture): # mixture of truncated splines
+                # Similar to above
+                #  Create the mean and scale at each data point's 'phi1' for each of the truncated splines (shape (K, len(data)))
+                spline_mean = jnp.stack([dist_._component_distributions[i]._loc_spl(data['phi1']) for i in range(dist_._n_components)])
+                spline_scale = jnp.stack([dist_._component_distributions[i]._scale_spl(data['phi1']) for i in range(dist_._n_components)])
+                adjusted_spline_scale = jnp.sqrt(spline_scale**2 + _errors**2)
+                lower = (dist_.low - spline_mean) / adjusted_spline_scale
+                higher = (dist_.high - spline_mean) / adjusted_spline_scale
+    
+                component_lp = jax.scipy.stats.truncnorm.logpdf(
+                                    x=_data[None, :], 
+                                    loc=spline_mean, 
+                                    scale=adjusted_spline_scale,
+                                    a=lower,
+                                    b=higher
+                                )            
+                # Including the weights (is this right?)
+                mixture_weights = params[component.name][coord_name]['mixing_distribution']
+                weighted_comp_lp = component_lp + jnp.log(mixture_weights)[:, None]
+    
+                variable_lp = jax.scipy.special.logsumexp(weighted_comp_lp, axis=0)
+                
+            else: # shouldn't be used but is here just in case
+                variable_lp = dist_.log_prob(value=_data, x=jnp.asarray(data['phi1']))
+    
+            # add log prob from this coordinate to the array for this component log prob
+            component_lp_stack = component_lp_stack.at[i].set(variable_lp)
+    
+            
+        # Get total log probability for this component and put into original dictionary
+        comp_lp = jnp.sum(component_lp_stack, axis=0) + jnp.log(params['mixture-probs'][n_comp])
+        lp_dict[component.name] = comp_lp
+        
+    return lp_dict
 
 def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx, 
          bkg_filename, stream_filename, stream_bkg_mm_filename, full_filename):

@@ -97,12 +97,13 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
                 "high": phi2_lim[1],
             },
             "pm1": {
+                # "mixing_vals": dist.Dirichlet(jnp.ones((n_mixture, bkg_pm1_knots.shape[0]))),
                 "mixing_distribution": (
                     dist.Categorical,
                     dist.Dirichlet(jnp.ones(n_mixture)) # two truncated normals
                 ),
                 "loc_vals": dist.Uniform(low=-10, high=10).expand([n_mixture, bkg_pm1_knots.shape[0]]),
-                "scale_vals": dist.HalfNormal(5).expand([n_mixture, bkg_pm1_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=4,scale=3,low=2.78e-3).expand([n_mixture, bkg_pm1_knots.shape[0]]),
                 "knots": bkg_pm1_knots,
                 "x": data["phi1"],
                 "low": pm1_lim[0],
@@ -112,12 +113,13 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
                 "clip_scales": (2.78e-3, None),
             },
             "pm2": {
+                # "mixing_vals": dist.Dirichlet(jnp.ones((n_mixture, bkg_pm2_knots.shape[0]))),
                 "mixing_distribution": (
                     dist.Categorical,
-                    dist.Dirichlet(jnp.ones(n_mixture))
+                    dist.Dirichlet(jnp.ones(n_mixture)) # two truncated normals
                 ),
                 "loc_vals": dist.Uniform(low=-10, high=10).expand([n_mixture, bkg_pm2_knots.shape[0]]),
-                "scale_vals": dist.HalfNormal(5).expand([n_mixture, bkg_pm2_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=4,scale=3,low=2.78e-3).expand([n_mixture, bkg_pm2_knots.shape[0]]),
                 "knots": bkg_pm2_knots,
                 "x": data["phi1"],
                 "low": pm2_lim[0],
@@ -127,12 +129,13 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
                 "clip_scales": (2.78e-3, None),
             },
             "rv": {
+                # "mixing_vals": dist.Dirichlet(jnp.ones((n_mixture, bkg_rv_knots.shape[0]))),
                 "mixing_distribution": (
                     dist.Categorical,
-                    dist.Dirichlet(jnp.ones(n_mixture))
+                    dist.Dirichlet(jnp.ones(n_mixture)) # two truncated normals
                 ),
                 "loc_vals": dist.Uniform(low=-500, high=500).expand([n_mixture, bkg_rv_knots.shape[0]]),
-                "scale_vals": dist.HalfNormal(100).expand([n_mixture, bkg_rv_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=100,scale=100,low=0.1).expand([n_mixture, bkg_rv_knots.shape[0]]),
                 "knots": bkg_rv_knots,
                 "x": data["phi1"],
                 "low": -500, #rv_lim[0],
@@ -149,7 +152,7 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
 
     return bkg_model
 
-def make_stream_model_component(knot_spacings, coord_bounds, data):
+def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_max):
     
     phi1_lim = coord_bounds['phi1']
     phi2_lim = coord_bounds['phi2']
@@ -163,7 +166,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data):
     stream_phi2_knots = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, phi2_knot_spacing)
     stream_pm1_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm1_knot_spacing)
     stream_pm2_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm2_knot_spacing)
-    stream_rv_knots   = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, rv_knot_spacing)
+    stream_rv_knots   = jnp.arange(rv_min, rv_max, rv_knot_spacing)
 
     _interp_dict = interpolate_stream_tracks(data, phi1_lim)
     eval_interp_phi2 = jnp.array(_interp_dict['phi2'](stream_phi2_knots))
@@ -194,7 +197,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data):
             },
             "phi2": {
                 # "loc_vals": dist.Uniform(*phi2_lim).expand([stream_phi2_knots.shape[0]]),
-                "loc_vals": dist.Normal(loc=eval_interp_phi2, scale=1),
+                "loc_vals": dist.TruncatedNormal(loc=eval_interp_phi2, scale=1,low=phi2_lim[0],high=phi2_lim[1]).expand([stream_phi2_knots.shape[0]]),
                 "scale_vals": dist.TruncatedNormal(loc=0.5,scale=0.5,low=0.05).expand([stream_phi2_knots.shape[0]]),
                 "knots": stream_phi2_knots,
                 "x": data["phi1"],
@@ -205,39 +208,39 @@ def make_stream_model_component(knot_spacings, coord_bounds, data):
             },
             "pm1": {
                 # "loc_vals": dist.Uniform(*pm1_lim).expand([stream_pm1_knots.shape[0]]),
-                "loc_vals": dist.Normal(loc=eval_interp_pm1, scale=2),
-                "scale_vals": dist.TruncatedNormal(loc=0.5,scale=0.5,low=2.78e-3).expand([stream_pm1_knots.shape[0]]),
+                "loc_vals": dist.TruncatedNormal(loc=eval_interp_pm1, scale=2, low=pm1_lim[0],high=pm1_lim[1]).expand([stream_pm1_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=0.1,scale=0.5,low=2.78e-3, high=2).expand([stream_pm1_knots.shape[0]]),
                 "knots": stream_pm1_knots,
                 "x": data["phi1"],
                 "low": pm1_lim[0],
                 "high": pm1_lim[1],
                 "spline_k": 3,
                 "clip_locs": pm1_lim,
-                "clip_scales": (2.78e-3, None),
+                "clip_scales": (2.78e-3, 2),
             },
             "pm2": {
                 # "loc_vals": dist.Uniform(*pm2_lim).expand([stream_pm2_knots.shape[0]]),
-                "loc_vals": dist.Normal(loc=eval_interp_pm2, scale=2),
-                "scale_vals": dist.TruncatedNormal(loc=0.5,scale=0.5,low=2.78e-3).expand([stream_pm2_knots.shape[0]]),
+                "loc_vals": dist.TruncatedNormal(loc=eval_interp_pm2, scale=2, low=pm2_lim[0],high=pm2_lim[1]).expand([stream_pm2_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=0.1,scale=0.5,low=2.78e-3, high=2).expand([stream_pm2_knots.shape[0]]),
                 "knots": stream_pm2_knots,
                 "x": data["phi1"],
                 "low": pm2_lim[0],
                 "high": pm2_lim[1],
                 "spline_k": 3,
                 "clip_locs": pm2_lim,
-                "clip_scales": (2.78e-3, None),
+                "clip_scales": (2.78e-3, 2),
             },
             "rv": {
-                # "loc_vals": dist.Uniform(*rv_lim).expand([stream_rv_knots.shape[0]]),
-                "loc_vals": dist.Normal(loc=eval_interp_rv, scale=100),
-                "scale_vals": dist.TruncatedNormal(loc=5,scale=5,low=0.1, high=20).expand([stream_rv_knots.shape[0]]),
+                "loc_vals": dist.Uniform(*rv_lim).expand([stream_rv_knots.shape[0]]),
+                # "loc_vals": dist.TruncatedNormal(loc=eval_interp_rv, scale=200, low=-500,high=500).expand([stream_rv_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=1,scale=5,low=0.1, high=100).expand([stream_rv_knots.shape[0]]),
                 "knots": stream_rv_knots,
                 "x": data["phi1"],
                 "low": -500, #rv_lim[0],
                 "high": 500, #rv_lim[1],
-                "spline_k": 3,
+                "spline_k": 1,
                 "clip_locs": (-500,500), #rv_lim,
-                "clip_scales": (0.1, None),
+                "clip_scales": (0.1, 100),
             },
         },
         conditional_data={"phi2": {"x": "phi1"}, 
