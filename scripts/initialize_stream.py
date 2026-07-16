@@ -1,14 +1,24 @@
+import functools
+
 import jax.numpy as jnp
 import numpyro.distributions as dist
 from stream_membership import ComponentMixtureModel, ModelComponent
 from stream_membership.distributions import (
-    IndependentGMM, 
-    TruncatedNormalSpline, 
-    DirichletSpline, 
+    IndependentGMM,
+    TruncatedNormalSpline,
+    DirichletSpline,
     TruncatedNormal1DSplineMixture
 )
 from scipy.stats import binned_statistic
 from scipy.interpolate import InterpolatedUnivariateSpline as IUS
+
+from cmd_flow_density import CalibratedFlowDensity
+
+# Coordinate key used for the (color, magnitude) CMD term. A tuple key is
+# used because this is a joint 2D distribution over (bp_rp, phot_g_mean_mag),
+# following the same convention as e.g. IndependentGMM's ("phi1", "phi2") joint
+# coordinate in make_offtrack_model_component.
+CMD_COORD = ("bp_rp", "phot_g_mean_mag")
 
 def get_bounds_and_grids(data, pawprint):
     
@@ -54,8 +64,20 @@ def interpolate_stream_tracks(stream_data, phi1_lim):
 
     return interp_dict
 
-def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
-    
+def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data, cmd_flow=None, cmd_norm_stats=None):
+    '''
+    cmd_flow, cmd_norm_stats (optional):
+        A pretrained, phi1-conditioned flowjax flow and its accompanying
+        normalization stats (as produced/saved by
+        ``pretrain_bkg_cmd_flow.py`` / loaded via its ``load_flow``), used to
+        add a probabilistic CMD (bp_rp, phot_g_mean_mag) term to the
+        background model, in addition to (not replacing) the existing hard
+        isochrone/HB cut applied upstream in ``run_CATS``. If either is
+        None (the default), no CMD term is added and this function behaves
+        exactly as before. When provided, ``data`` must also include
+        "bp_rp" and "phot_g_mean_mag" columns (aligned with "phi1", etc.).
+    '''
+
     phi1_lim = coord_bounds['phi1']
     phi2_lim = coord_bounds['phi2']
     pm1_lim  = coord_bounds['pm1']
@@ -71,16 +93,17 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
     bkg_pm2_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm2_knot_spacing)
     bkg_rv_knots   = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, rv_knot_spacing)
     
-    bkg_model = ModelComponent(
-        name="background",
-        coord_distributions={
-            "phi1": IndependentGMM,
-            "phi2": dist.Uniform,
-            "pm1": TruncatedNormal1DSplineMixture,
-            "pm2": TruncatedNormal1DSplineMixture,
-            "rv": TruncatedNormal1DSplineMixture,
-        },
-        coord_parameters={
+    coord_distributions = {
+        "phi1": IndependentGMM,
+        "phi2": dist.Uniform,
+        "pm1": TruncatedNormal1DSplineMixture,
+        "pm2": TruncatedNormal1DSplineMixture,
+        "rv": TruncatedNormal1DSplineMixture,
+    }
+    conditional_data = {"pm1": {"x": "phi1"},
+                         "pm2": {"x": "phi1"},
+                         "rv": {"x": "phi1"}}
+    coord_parameters = {
             "phi1": {
                 "mixing_distribution": (
                     dist.Categorical,
@@ -144,10 +167,31 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
                 "clip_locs": (-500, 500),
                 "clip_scales": (0.1, None),
             },
-        },
-        conditional_data={"pm1": {"x": "phi1"}, 
-                          "pm2": {"x": "phi1"},
-                          "rv": {"x": "phi1"}},
+    }
+
+    if cmd_flow is not None and cmd_norm_stats is not None:
+        # NOTE: `flow` and `norm_stats` must NOT be passed as entries in
+        # coord_parameters[CMD_COORD] directly, because ModelComponent.make_dists
+        # interprets any *dict-valued* entry in coord_parameters as the kwargs for
+        # a nested numpyro.sample() call (see model.py's make_dists: `isinstance(val,
+        # dict)` -> `numpyro.sample(numpyro_name, **val)`), and `norm_stats` is
+        # itself a plain dict. Instead, bind `flow`/`norm_stats` as fixed
+        # (non-numpyro, non-sampled) constructor arguments via functools.partial, so
+        # coord_parameters[CMD_COORD] only needs to supply "x" (a plain array, which
+        # is treated as a fixed value and passed through as-is).
+        coord_distributions[CMD_COORD] = functools.partial(
+            CalibratedFlowDensity, flow=cmd_flow, norm_stats=cmd_norm_stats
+        )
+        coord_parameters[CMD_COORD] = {
+            "x": data["phi1"],
+        }
+        conditional_data[CMD_COORD] = {"x": "phi1"}
+
+    bkg_model = ModelComponent(
+        name="background",
+        coord_distributions=coord_distributions,
+        coord_parameters=coord_parameters,
+        conditional_data=conditional_data,
     )
 
     return bkg_model
