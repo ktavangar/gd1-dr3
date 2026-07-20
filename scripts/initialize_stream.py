@@ -1,21 +1,91 @@
+import functools
+import json
+from pathlib import Path
+
 import jax.numpy as jnp
 import numpyro.distributions as dist
 from stream_membership import ComponentMixtureModel, ModelComponent
 from stream_membership.distributions import (
-    IndependentGMM, 
-    TruncatedNormalSpline, 
-    DirichletSpline, 
+    IndependentGMM,
+    IsochroneCMD,
+    TruncatedNormalSpline,
+    DirichletSpline,
     TruncatedNormal1DSplineMixture
 )
 from scipy.stats import binned_statistic
 from scipy.interpolate import InterpolatedUnivariateSpline as IUS
 
+from cmd_flow_density import CalibratedFlowDensity
+
+# Coordinate key used for the (color, magnitude) CMD term. A tuple key is
+# used because this is a joint 2D distribution over (bp_rp, phot_g_mean_mag),
+# following the same convention as e.g. IndependentGMM's ("phi1", "phi2") joint
+# coordinate in make_offtrack_model_component.
+CMD_COORD = ("bp_rp", "phot_g_mean_mag")
+
+
+def load_stream_isochrone(json_path):
+    """
+    Load the fixed Gaia-band SSP isochrone track produced by
+    ``scripts/generate_stream_isochrone.py`` (age=12 Gyr, [Fe/H]=-2.5,
+    matching ``cats.inputs.stream_inputs["GD-1"]``), for use as the
+    ``IsochroneCMD`` stream CMD term in ``make_stream_model_component``.
+
+    Note: ``generate_stream_isochrone.py`` requires network access (to fetch
+    MIST grid data) that isn't available in every environment -- see that
+    script's docstring. If ``json_path`` doesn't exist, run it elsewhere and
+    copy the resulting ``*.json`` file here.
+
+    Returns
+    -------
+    dict with keys "track_abs_mag", "track_color", "distmod_coeffs" (jnp
+    arrays), ready to be splatted into ``IsochroneCMD``'s fixed constructor
+    arguments (see how it's used below, bound via ``functools.partial``).
+    """
+    with open(json_path) as f:
+        meta = json.load(f)
+    return {
+        "track_abs_mag": jnp.array(meta["abs_g"]),
+        "track_color": jnp.array(meta["bp_rp"]),
+        "distmod_coeffs": jnp.array(meta["distmod_coeffs"]),
+    }
+
 def get_bounds_and_grids(data, pawprint):
     
     phi1_lim = (jnp.min(data['phi1']), jnp.max(data['phi1']))
     phi2_lim = (jnp.min(data['phi2']), jnp.max(data['phi2']))
-    pm1_lim = (jnp.min(pawprint.pmprint.vertices[:,0]), jnp.max(pawprint.pmprint.vertices[:,0]))
-    pm2_lim = (jnp.min(pawprint.pmprint.vertices[:,1]), jnp.max(pawprint.pmprint.vertices[:,1]))
+
+    # NOTE: pm1_lim/pm2_lim used to be set from the (rough, coarse) proper
+    # motion polygon vertices alone. That polygon is only meant for an early
+    # rough on-track/off-track cut, so it can be narrower than the actual
+    # pm1/pm2 range spanned by `data` (which includes off-track background
+    # stars, by construction more scattered in proper motion than on-track
+    # stream stars). These pm1_lim/pm2_lim bounds are used downstream as the
+    # *truncation* bounds (`low`/`high`) for the background model's
+    # TruncatedNormal1DSplineMixture over pm1/pm2.
+    #
+    # This matters for the "FloatingPointError: invalid value (nan)
+    # encountered in mul" SVI crash: the real root cause (fixed at its
+    # source in stream_membership/distributions/normal_spline.py's
+    # TruncatedNormalSpline._make_helper_dist) is that the spline's
+    # interpolated `loc` can drift far outside [low, high] during
+    # optimization, which underflows the TruncatedNormal's normalizing
+    # constant and produces a NaN gradient. Widening pm1_lim/pm2_lim here to
+    # also cover the real data range (unioned with the polygon range) is a
+    # complementary mitigation, not the primary fix: it narrows the gap
+    # between this truncation window and the much wider `clip_locs=(-10,
+    # 10)` bound on `loc` used in make_bkg_model_component() below, making
+    # it less likely `loc` needs to travel far to reach the true background
+    # population's pm1/pm2 range in the first place, and it also guarantees
+    # no real background data point is itself outside [low, high].
+    pm1_lim = (
+        jnp.minimum(jnp.min(pawprint.pmprint.vertices[:, 0]), jnp.min(data['pm1'])),
+        jnp.maximum(jnp.max(pawprint.pmprint.vertices[:, 0]), jnp.max(data['pm1'])),
+    )
+    pm2_lim = (
+        jnp.minimum(jnp.min(pawprint.pmprint.vertices[:, 1]), jnp.min(data['pm2'])),
+        jnp.maximum(jnp.max(pawprint.pmprint.vertices[:, 1]), jnp.max(data['pm2'])),
+    )
     rv_lim = (jnp.min(data['rv']), jnp.max(data['rv']))
 
     coord_bounds = {"phi1": phi1_lim, "phi2": phi2_lim, "pm1": pm1_lim, "pm2": pm2_lim, "rv": rv_lim}
@@ -54,8 +124,20 @@ def interpolate_stream_tracks(stream_data, phi1_lim):
 
     return interp_dict
 
-def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
-    
+def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data, cmd_flow=None, cmd_norm_stats=None):
+    '''
+    cmd_flow, cmd_norm_stats (optional):
+        A pretrained, phi1-conditioned flowjax flow and its accompanying
+        normalization stats (as produced/saved by
+        ``pretrain_bkg_cmd_flow.py`` / loaded via its ``load_flow``), used to
+        add a probabilistic CMD (bp_rp, phot_g_mean_mag) term to the
+        background model, in addition to (not replacing) the existing hard
+        isochrone/HB cut applied upstream in ``run_CATS``. If either is
+        None (the default), no CMD term is added and this function behaves
+        exactly as before. When provided, ``data`` must also include
+        "bp_rp" and "phot_g_mean_mag" columns (aligned with "phi1", etc.).
+    '''
+
     phi1_lim = coord_bounds['phi1']
     phi2_lim = coord_bounds['phi2']
     pm1_lim  = coord_bounds['pm1']
@@ -71,16 +153,17 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
     bkg_pm2_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm2_knot_spacing)
     bkg_rv_knots   = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, rv_knot_spacing)
     
-    bkg_model = ModelComponent(
-        name="background",
-        coord_distributions={
-            "phi1": IndependentGMM,
-            "phi2": dist.Uniform,
-            "pm1": TruncatedNormal1DSplineMixture,
-            "pm2": TruncatedNormal1DSplineMixture,
-            "rv": TruncatedNormal1DSplineMixture,
-        },
-        coord_parameters={
+    coord_distributions = {
+        "phi1": IndependentGMM,
+        "phi2": dist.Uniform,
+        "pm1": TruncatedNormal1DSplineMixture,
+        "pm2": TruncatedNormal1DSplineMixture,
+        "rv": TruncatedNormal1DSplineMixture,
+    }
+    conditional_data = {"pm1": {"x": "phi1"},
+                         "pm2": {"x": "phi1"},
+                         "rv": {"x": "phi1"}}
+    coord_parameters = {
             "phi1": {
                 "mixing_distribution": (
                     dist.Categorical,
@@ -144,16 +227,51 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data):
                 "clip_locs": (-500, 500),
                 "clip_scales": (0.1, None),
             },
-        },
-        conditional_data={"pm1": {"x": "phi1"}, 
-                          "pm2": {"x": "phi1"},
-                          "rv": {"x": "phi1"}},
+    }
+
+    if cmd_flow is not None and cmd_norm_stats is not None:
+        # NOTE: `flow` and `norm_stats` must NOT be passed as entries in
+        # coord_parameters[CMD_COORD] directly, because ModelComponent.make_dists
+        # interprets any *dict-valued* entry in coord_parameters as the kwargs for
+        # a nested numpyro.sample() call (see model.py's make_dists: `isinstance(val,
+        # dict)` -> `numpyro.sample(numpyro_name, **val)`), and `norm_stats` is
+        # itself a plain dict. Instead, bind `flow`/`norm_stats` as fixed
+        # (non-numpyro, non-sampled) constructor arguments via functools.partial, so
+        # coord_parameters[CMD_COORD] only needs to supply "x" (a plain array, which
+        # is treated as a fixed value and passed through as-is).
+        coord_distributions[CMD_COORD] = functools.partial(
+            CalibratedFlowDensity, flow=cmd_flow, norm_stats=cmd_norm_stats
+        )
+        coord_parameters[CMD_COORD] = {
+            "x": data["phi1"],
+        }
+        conditional_data[CMD_COORD] = {"x": "phi1"}
+
+    bkg_model = ModelComponent(
+        name="background",
+        coord_distributions=coord_distributions,
+        coord_parameters=coord_parameters,
+        conditional_data=conditional_data,
     )
 
     return bkg_model
 
-def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_max):
-    
+def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_max, stream_isochrone=None):
+    '''
+    stream_isochrone (optional):
+        A dict as returned by ``load_stream_isochrone`` (fixed
+        "track_abs_mag", "track_color", "distmod_coeffs" arrays), used to add
+        a probabilistic single-stellar-population (SSP) isochrone CMD
+        (bp_rp, phot_g_mean_mag) term to the stream model, following the
+        stream CMD approach of Starkman et al. 2025 -- a fixed isochrone
+        track shape (see ``scripts/generate_stream_isochrone.py``) shifted
+        along phi1 by the fixed Valluri et al. 2024 apparent
+        distance-modulus track, with a fit intrinsic color scatter. If None
+        (the default), no CMD term is added and this function behaves
+        exactly as before. When provided, ``data`` must also include
+        "bp_rp" and "phot_g_mean_mag" columns (aligned with "phi1", etc.).
+    '''
+
     phi1_lim = coord_bounds['phi1']
     phi2_lim = coord_bounds['phi2']
     pm1_lim  = coord_bounds['pm1']
@@ -174,16 +292,14 @@ def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_ma
     eval_interp_pm2 = jnp.array(_interp_dict['pm2'](stream_pm2_knots))
     eval_interp_rv = jnp.array(_interp_dict['rv'](stream_rv_knots))
     
-    stream_model = ModelComponent(
-        name="stream",
-        coord_distributions={
-            "phi1": IndependentGMM,
-            "phi2": TruncatedNormalSpline,
-            "pm1": TruncatedNormalSpline,
-            "pm2": TruncatedNormalSpline,
-            "rv": TruncatedNormalSpline,
-        },
-        coord_parameters={
+    coord_distributions = {
+        "phi1": IndependentGMM,
+        "phi2": TruncatedNormalSpline,
+        "pm1": TruncatedNormalSpline,
+        "pm2": TruncatedNormalSpline,
+        "rv": TruncatedNormalSpline,
+    }
+    coord_parameters = {
             "phi1": {
                 "mixing_distribution": (
                     dist.Categorical,
@@ -242,11 +358,46 @@ def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_ma
                 "clip_locs": (-500,500), #rv_lim,
                 "clip_scales": (0.1, 100),
             },
-        },
-        conditional_data={"phi2": {"x": "phi1"}, 
-                          "pm1": {"x": "phi1"}, 
+    }
+    conditional_data = {"phi2": {"x": "phi1"},
+                          "pm1": {"x": "phi1"},
                           "pm2": {"x": "phi1"},
-                          "rv": {"x": "phi1"}},
+                          "rv": {"x": "phi1"}}
+
+    if stream_isochrone is not None:
+        # NOTE: see the matching NOTE in make_bkg_model_component -- fixed
+        # (non-numpyro) track/distmod arrays must be bound via
+        # functools.partial rather than placed directly in
+        # coord_parameters[CMD_COORD], since ModelComponent.make_dists
+        # interprets any *dict-valued* entry as kwargs for a nested
+        # numpyro.sample() call. Only "x" (a plain array) and the fit
+        # nuisance priors (dm_offset, color_offset, color_scale) go in
+        # coord_parameters[CMD_COORD].
+        coord_distributions[CMD_COORD] = functools.partial(
+            IsochroneCMD,
+            track_abs_mag=stream_isochrone["track_abs_mag"],
+            track_color=stream_isochrone["track_color"],
+            distmod_coeffs=stream_isochrone["distmod_coeffs"],
+        )
+        coord_parameters[CMD_COORD] = {
+            "x": data["phi1"],
+            # Small, weakly-informative priors letting the joint fit
+            # calibrate for any (phi1-independent) mismatch between the
+            # fixed Valluri+24 distance track / MIST isochrone and the real
+            # GD-1 data, without turning the distance track into a free
+            # phi1-dependent spline (per the modeling choice to keep this
+            # fixed, given the modest ~1.5k-star stream sample).
+            "dm_offset": dist.Normal(loc=0.0, scale=0.3),
+            "color_offset": dist.Normal(loc=0.0, scale=0.05),
+            "color_scale": dist.TruncatedNormal(loc=0.05, scale=0.05, low=5e-3),
+        }
+        conditional_data[CMD_COORD] = {"x": "phi1"}
+
+    stream_model = ModelComponent(
+        name="stream",
+        coord_distributions=coord_distributions,
+        coord_parameters=coord_parameters,
+        conditional_data=conditional_data,
     )
 
     return stream_model
@@ -273,38 +424,60 @@ def make_offtrack_model_component(offtrack_dx, stream_model, coord_bounds):
     axis=-1,
     ).reshape(-1, 2)
 
-    ## NOTE: This model is tide to the stream model for the proper motions.
+    ## NOTE: This model is tied to the stream model for the proper motions
+    ##        (and, if present, the CMD term -- see below).
     ##        If they should not be tied, update the parameters either here or after calling it
+    coord_distributions = {
+        ("phi1", "phi2"): IndependentGMM,
+        "pm1": stream_model.coord_distributions["pm1"],
+        "pm2": stream_model.coord_distributions["pm2"],
+        "rv": stream_model.coord_distributions["rv"],
+    }
+    coord_parameters = {
+        ("phi1", "phi2"): {
+            "mixing_distribution": (
+                dist.Categorical,
+                dist.Dirichlet(jnp.full(offtrack_phi12_locs.shape[0], 1)),
+            ),
+            "locs": offtrack_phi12_locs.T,
+            "scales":
+                # dist.HalfNormal(jnp.array([offtrack_phi1_dx, offtrack_phi2_dx])[:, None]).expand(offtrack_phi12_locs.T.shape),
+                dist.TruncatedNormal(loc=jnp.array(offtrack_dx)[:, None], scale=jnp.array(offtrack_dx)[:, None],
+                                     low=0.1*jnp.array(offtrack_dx)[:, None]).expand(offtrack_phi12_locs.T.shape),
+            "low": jnp.array([phi1_lim[0], phi2_lim[0]])[:, None],
+            "high": jnp.array([phi1_lim[1], phi2_lim[1]])[:, None],
+        },
+        # We don't need to define the parameters here, as they are the same as for the
+        # stream model - this will be handled below when we combine the components into
+        # a mixture model
+        "pm1": stream_model.coord_parameters["pm1"],
+        "pm2": stream_model.coord_parameters["pm2"],
+        "rv": stream_model.coord_parameters["rv"],
+    }
+    conditional_data = {"pm1": {"x": "phi1"}, "pm2": {"x": "phi1"}, "rv": {"x": "phi1"}}
+
+    if CMD_COORD in stream_model.coord_distributions:
+        # `ComponentMixtureModel` requires every component in a mixture to
+        # share the same `coord_names` (see
+        # `stream_membership.model.ComponentMixtureModel.__post_init__`), so
+        # once the stream model has a CMD_COORD term (see
+        # `make_stream_model_component`'s `stream_isochrone` argument), the
+        # offtrack component -- which is combined with the stream model in
+        # Stage 4's full mixture -- must have one too, or the mixture
+        # construction will fail. Physically, offtrack stars are stream
+        # stars that have scattered spatially off the main track, so it's
+        # natural to tie the offtrack CMD term directly to the stream's
+        # (fixed-track) IsochroneCMD term, exactly as is already done above
+        # for pm1/pm2/rv.
+        coord_distributions[CMD_COORD] = stream_model.coord_distributions[CMD_COORD]
+        coord_parameters[CMD_COORD] = stream_model.coord_parameters[CMD_COORD]
+        conditional_data[CMD_COORD] = {"x": "phi1"}
+
     offtrack_model = ModelComponent(
         name="offtrack",
-        coord_distributions={
-            ("phi1", "phi2"): IndependentGMM,
-            "pm1": stream_model.coord_distributions["pm1"],
-            "pm2": stream_model.coord_distributions["pm2"],
-            "rv": stream_model.coord_distributions["rv"],
-        },
-        coord_parameters={
-            ("phi1", "phi2"): {
-                "mixing_distribution": (
-                    dist.Categorical,
-                    dist.Dirichlet(jnp.full(offtrack_phi12_locs.shape[0], 1)),
-                ),
-                "locs": offtrack_phi12_locs.T,
-                "scales":
-                    # dist.HalfNormal(jnp.array([offtrack_phi1_dx, offtrack_phi2_dx])[:, None]).expand(offtrack_phi12_locs.T.shape), 
-                    dist.TruncatedNormal(loc=jnp.array(offtrack_dx)[:, None], scale=jnp.array(offtrack_dx)[:, None], 
-                                         low=0.1*jnp.array(offtrack_dx)[:, None]).expand(offtrack_phi12_locs.T.shape),
-                "low": jnp.array([phi1_lim[0], phi2_lim[0]])[:, None],
-                "high": jnp.array([phi1_lim[1], phi2_lim[1]])[:, None],
-            },
-            # We don't need to define the parameters here, as they are the same as for the
-            # stream model - this will be handled below when we combine the components into
-            # a mixture model
-            "pm1": stream_model.coord_parameters["pm1"],
-            "pm2": stream_model.coord_parameters["pm2"],
-            "rv": stream_model.coord_parameters["rv"],
-        },
-        conditional_data={"pm1": {"x": "phi1"}, "pm2": {"x": "phi1"}, "rv": {"x": "phi1"}},
+        coord_distributions=coord_distributions,
+        coord_parameters=coord_parameters,
+        conditional_data=conditional_data,
     )
 
     return offtrack_model, offtrack_phi12_locs

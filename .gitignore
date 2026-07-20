@@ -56,9 +56,17 @@ distribute-*.tar.gz
 .pydevproject
 .settings
 pip-wheel-metadata/
+*.log
 
 # Mac OSX
 .DS_Store
 
 data
 cache
+stream-env
+.jax-cpu-env
+stream-env*
+.*
+*.pkl
+svi_results
+paper_figures
