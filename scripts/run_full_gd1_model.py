@@ -47,13 +47,13 @@ def run_CATS(data, stream_name, phi1_lim):
     
     # Create the CMD cuts
     iso_obj_ = Isochrone(cat, inputs[stream_name], pawprint=pawprint)
-    _, _, _, _, pprint = iso_obj_.simpleSln(maxmag=22, mass_thresh=0.83)
+    _, _, _, _, pprint = iso_obj_.simpleSln(mass_thresh=0.83)
     
     pmsel = ProperMotionSelection(cat, inputs[stream_name], pprint,
                                   n_dispersion_phi1=3, n_dispersion_phi2=3, cutoff=0.1)
 
     iso_obj = Isochrone(cat, inputs[stream_name], pawprint=pmsel.pawprint,)
-    _, iso_mask, _, hb_mask, pprint = iso_obj.simpleSln(22, mass_thresh=0.83)
+    _, iso_mask, _, hb_mask, pprint = iso_obj.simpleSln(mass_thresh=0.83)
 
     
     ##### rough pm cut to start with (this comes only from the galstreams proper motion tracks)

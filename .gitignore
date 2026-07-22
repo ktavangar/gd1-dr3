@@ -70,3 +70,8 @@ stream-env*
 *.pkl
 svi_results
 paper_figures
+
+*.pdf
+*.png
+*.jpg
+*.jpeg

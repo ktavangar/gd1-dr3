@@ -18,15 +18,15 @@ from scipy.interpolate import InterpolatedUnivariateSpline as IUS
 from cmd_flow_density import CalibratedFlowDensity
 
 # Coordinate key used for the (color, magnitude) CMD term. A tuple key is
-# used because this is a joint 2D distribution over (bp_rp, phot_g_mean_mag),
+# used because this is a joint 2D distribution over (mag1, mag2),
 # following the same convention as e.g. IndependentGMM's ("phi1", "phi2") joint
 # coordinate in make_offtrack_model_component.
-CMD_COORD = ("bp_rp", "phot_g_mean_mag")
+CMD_COORD = ("PS_g", "PS_r")
 
 
 def load_stream_isochrone(json_path):
     """
-    Load the fixed Gaia-band SSP isochrone track produced by
+    Load the fixed SSP isochrone track produced by
     ``scripts/generate_stream_isochrone.py`` (age=12 Gyr, [Fe/H]=-2.5,
     matching ``cats.inputs.stream_inputs["GD-1"]``), for use as the
     ``IsochroneCMD`` stream CMD term in ``make_stream_model_component``.
@@ -45,9 +45,9 @@ def load_stream_isochrone(json_path):
     with open(json_path) as f:
         meta = json.load(f)
     return {
-        "track_abs_mag": jnp.array(meta["abs_g"]),
-        "track_color": jnp.array(meta["bp_rp"]),
-        "distmod_coeffs": jnp.array(meta["distmod_coeffs"]),
+        "track_abs_mag": jnp.array(meta["abs_mag1"]),
+        "track_color": jnp.array(meta["abs_mag1"]) - jnp.array(meta["abs_mag2"]),
+        "distmod_coeffs": jnp.array(meta["distmod_coeffs"]), # QUITE SPECIFIC TO GD-1
     }
 
 def get_bounds_and_grids(data, pawprint):
@@ -130,12 +130,10 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data, cmd_f
         A pretrained, phi1-conditioned flowjax flow and its accompanying
         normalization stats (as produced/saved by
         ``pretrain_bkg_cmd_flow.py`` / loaded via its ``load_flow``), used to
-        add a probabilistic CMD (bp_rp, phot_g_mean_mag) term to the
-        background model, in addition to (not replacing) the existing hard
-        isochrone/HB cut applied upstream in ``run_CATS``. If either is
-        None (the default), no CMD term is added and this function behaves
-        exactly as before. When provided, ``data`` must also include
-        "bp_rp" and "phot_g_mean_mag" columns (aligned with "phi1", etc.).
+        add a probabilistic photometric (mag1, mag2) term to the
+        background model. If either is None (the default), no CMD term is added 
+        and this function behaves exactly as before. When provided, ``data`` 
+        must also include magnitude columns (aligned with "phi1", etc.).
     '''
 
     phi1_lim = coord_bounds['phi1']
@@ -262,14 +260,14 @@ def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_ma
         A dict as returned by ``load_stream_isochrone`` (fixed
         "track_abs_mag", "track_color", "distmod_coeffs" arrays), used to add
         a probabilistic single-stellar-population (SSP) isochrone CMD
-        (bp_rp, phot_g_mean_mag) term to the stream model, following the
+        (color, absolute magnitude) term to the stream model, following the
         stream CMD approach of Starkman et al. 2025 -- a fixed isochrone
         track shape (see ``scripts/generate_stream_isochrone.py``) shifted
         along phi1 by the fixed Valluri et al. 2024 apparent
         distance-modulus track, with a fit intrinsic color scatter. If None
         (the default), no CMD term is added and this function behaves
         exactly as before. When provided, ``data`` must also include
-        "bp_rp" and "phot_g_mean_mag" columns (aligned with "phi1", etc.).
+        magnitude columns (aligned with "phi1", etc.).
     '''
 
     phi1_lim = coord_bounds['phi1']

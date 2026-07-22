@@ -238,8 +238,8 @@ def plot_stream_cmd_fit(
 
     cmd_dist = stream_model.make_dists(stream_params)[init_stream.CMD_COORD]
 
-    bp_rp = np.asarray(data["bp_rp"])
-    g_mag = np.asarray(data["phot_g_mean_mag"])
+    mag1 = np.asarray(data["PS_g"])
+    mag2 = np.asarray(data["PS_r"])
     phi1 = np.asarray(data["phi1"])
     probs_arr = None if membership_probs is None else np.asarray(membership_probs)
 
@@ -250,13 +250,13 @@ def plot_stream_cmd_fit(
     ax = axes[0]
     if probs_arr is not None:
         sc = ax.scatter(
-            bp_rp, g_mag, c=probs_arr, cmap=cmap, vmin=0, vmax=1,
+            mag1-mag2, mag1, c=probs_arr, cmap=cmap, vmin=0, vmax=1,
             s=3, alpha=0.7, rasterized=True,
         )
         cb = fig.colorbar(sc, ax=ax)
         cb.set_label("p(stream)")
     else:
-        ax.scatter(bp_rp, g_mag, color="0.4", s=3, alpha=0.5, rasterized=True)
+        ax.scatter(mag1-mag2, mag1, color="0.4", s=3, alpha=0.5, rasterized=True)
 
     if phi1_vals is None:
         phi1_vals = np.percentile(phi1, np.linspace(5, 95, n_track_phi1))
@@ -275,6 +275,8 @@ def plot_stream_cmd_fit(
             label=rf"$\phi_1={phi1_val:.0f}^\circ$",
         )
     ax.legend(fontsize=7, loc="upper left", ncol=2, framealpha=0.8)
+    ax.set_xlim(-0.5, 1.5)
+    ax.set_ylim(10, 22)
     ax.invert_yaxis()
     ax.set_xlabel("BP - RP")
     ax.set_ylabel("Gaia G")
@@ -299,7 +301,7 @@ def plot_stream_cmd_fit(
     member_mask = np.ones(len(phi1), dtype=bool) if probs_arr is None else probs_arr > 0.5
     n_member = int(member_mask.sum())
     ax.scatter(
-        bp_rp[member_mask], g_mag[member_mask], s=4, alpha=0.5, color="0.3",
+        mag1[member_mask]-mag2[member_mask], mag1[member_mask], s=4, alpha=0.5, color="0.3",
         label=f"data (N={n_member})", rasterized=True,
     )
 
@@ -308,12 +310,21 @@ def plot_stream_cmd_fit(
     samples = jax.vmap(lambda k, x: cmd_dist.sample(k, x=x))(
         jax.random.split(key, phi1_for_samples.shape[0]), phi1_for_samples
     )
+    # `IsochroneCMD.sample()` returns (magnitude1, magnitude2) -- e.g.
+    # (PS_g, PS_r) -- matching its (magnitude1, magnitude2) `log_prob`/
+    # `sample` convention, NOT a precomputed (color, magnitude) pair. Compute
+    # the color here for plotting, same as the `mag1 - mag2` done for the
+    # real data above and in panel 1.
+    sample_mag1 = np.asarray(samples[:, 0])
+    sample_mag2 = np.asarray(samples[:, 1])
     ax.scatter(
-        np.asarray(samples[:, 0]), np.asarray(samples[:, 1]), s=4, alpha=0.5,
+        sample_mag1 - sample_mag2, sample_mag1, s=4, alpha=0.5,
         color="C1", label=f"IsochroneCMD samples (N={phi1_for_samples.shape[0]})",
         rasterized=True,
     )
     ax.legend(fontsize=8)
+    ax.set_xlim(-0.5, 1.5)
+    ax.set_ylim(10, 22)
     ax.invert_yaxis()
     ax.set_xlabel("BP - RP")
     ax.set_ylabel("Gaia G")

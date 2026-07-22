@@ -64,7 +64,7 @@ class CalibratedFlowDensity(dist.Distribution):
         norm_stats: dict[str, dict[str, float]],
         x: ArrayLike | None = None,
         *,
-        event_columns: tuple[str, ...] = ("bp_rp", "phot_g_mean_mag"),
+        event_columns: tuple[str, ...] = ("g0", "r0"),
         cond_column: str = "phi1",
         validate_args: bool | None = None,
     ) -> None:
@@ -96,13 +96,13 @@ class CalibratedFlowDensity(dist.Distribution):
         sample_shape: Any = (),
         x: ArrayLike | None = None,
     ) -> jax.Array | Any:
-        """Draws raw-unit (color, magnitude) samples from the flow."""
+        """Draws raw-unit (magnitude, magnitude) samples from the flow."""
         x_std = None if x is None else self._standardize_cond(jnp.asarray(x))
         std_sample = self._flow_density.sample(key, sample_shape=sample_shape, x=x_std)
         return std_sample * self._scale + self._loc
 
     def log_prob(self, value: ArrayLike, x: ArrayLike | None = None) -> jax.Array | Any:
-        """Evaluates the log probability density for raw-unit (color, magnitude) values."""
+        """Evaluates the log probability density for raw-unit (magnitude, magnitude) values."""
         value = jnp.asarray(value)
         std_value = (value - self._loc) / self._scale
         x_std = None if x is None else self._standardize_cond(jnp.asarray(x))
