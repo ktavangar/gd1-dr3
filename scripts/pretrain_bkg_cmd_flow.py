@@ -71,6 +71,7 @@ from pathlib import Path
 import equinox as eqx
 import json
 import argparse
+import pickle
 
 COND_COLUMNS = ("phi1",) # conditioning variable(s) of the normalizing flow
 CMAP = cmr.sunburst_r
@@ -175,7 +176,7 @@ def create_background_table(
 def clean_bkg_data(
     bkg_tbl: Table,
     mag_param_names: tuple[str, str], 
-    maxmag: float = 22, 
+    maxmag: float = None, 
     max_n: int = None, 
     seed: int = 42) -> Table:
     """
@@ -423,10 +424,10 @@ def make_diagnostic_plot(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-file", default="/Users/Tavangar/Work/gd1-dr3/data/GD1-region-alldata.fits")
+    parser.add_argument("--data-file", default="/Users/Tavangar/Work/gd1-dr3/data/GD-1_all_data_2026.fits")
     parser.add_argument(
         "--bkg-table-pickle",
-        default=None,
+        default="/Users/Tavangar/Work/gd1-dr3/data/post_cats_data_flow_version.pkl",
         help=(
             "Path to a pickle containing the real, CATS-selected bkg_data "
             "table (dict with a 'bkg_data' key, or a bare Table). If given, "
@@ -448,9 +449,9 @@ def main():
     parser.add_argument("--max-n", type=int, default=None,
         help="Max number of background sources to train on (random subsample).",
     )
-    parser.add_argument("--flow-layers", type=int, default=32)
-    parser.add_argument("--nn-width", type=int, default=100)
-    parser.add_argument("--nn-depth", type=int, default=2)
+    parser.add_argument("--flow-layers", type=int, default=64)
+    parser.add_argument("--nn-width", type=int, default=200)
+    parser.add_argument("--nn-depth", type=int, default=4)
     parser.add_argument("--rqs-knots", type=int, default=32)
     parser.add_argument("--rqs-interval", type=float, default=5.0)
     parser.add_argument("--max-epochs", type=int, default=200)

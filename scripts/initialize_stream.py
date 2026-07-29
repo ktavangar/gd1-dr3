@@ -15,7 +15,7 @@ from stream_membership.distributions import (
 from scipy.stats import binned_statistic
 from scipy.interpolate import InterpolatedUnivariateSpline as IUS
 
-from cmd_flow_density import CalibratedFlowDensity
+from cmd_flow_density import CalibratedFlowDensity, FrozenLogProb
 
 # Coordinate key used for the (color, magnitude) CMD term. A tuple key is
 # used because this is a joint 2D distribution over (mag1, mag2),
@@ -142,25 +142,29 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data, cmd_f
     pm2_lim  = coord_bounds['pm2']
     rv_lim   = coord_bounds['rv']
 
-    phi1_knot_spacing, pm1_knot_spacing, pm2_knot_spacing, rv_knot_spacing = knot_spacings
+    phi1_knot_spacing, phi2_knot_spacing, pm1_knot_spacing, pm2_knot_spacing, rv_knot_spacing = knot_spacings
 
     bkg_phi1_knots = jnp.arange(jnp.around(phi1_lim[0]),# + phi1_knot_spacing/2, 
                                 jnp.around(phi1_lim[1])+1e-3,# - phi1_knot_spacing/2 + 1e-3, 
                                 phi1_knot_spacing)
+    bkg_phi2_knots = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, phi2_knot_spacing)
     bkg_pm1_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm1_knot_spacing)
     bkg_pm2_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm2_knot_spacing)
     bkg_rv_knots   = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, rv_knot_spacing)
     
     coord_distributions = {
         "phi1": IndependentGMM,
-        "phi2": dist.Uniform,
+        "phi2": TruncatedNormalSpline,
         "pm1": TruncatedNormal1DSplineMixture,
         "pm2": TruncatedNormal1DSplineMixture,
         "rv": TruncatedNormal1DSplineMixture,
     }
-    conditional_data = {"pm1": {"x": "phi1"},
-                         "pm2": {"x": "phi1"},
-                         "rv": {"x": "phi1"}}
+    conditional_data = {
+        "phi2": {"x": "phi1"},
+        "pm1": {"x": "phi1"},
+        "pm2": {"x": "phi1"},
+        "rv": {"x": "phi1"}
+    }
     coord_parameters = {
             "phi1": {
                 "mixing_distribution": (
@@ -174,8 +178,15 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data, cmd_f
                 "high": jnp.array([phi1_lim[1]])[:, None],                  
             },
             "phi2": {
+                "loc_vals": dist.Uniform(low=-10, high=10).expand([bkg_phi2_knots.shape[0]]),
+                "scale_vals": dist.TruncatedNormal(loc=5,scale=5,low=1e-3).expand([bkg_phi2_knots.shape[0]]),
+                "knots": bkg_phi2_knots,
+                "x": data["phi1"],
                 "low": phi2_lim[0],
                 "high": phi2_lim[1],
+                "spline_k": 3,
+                "clip_locs": (-10,10),
+                "clip_scales": (2.78e-3, None),
             },
             "pm1": {
                 # "mixing_vals": dist.Dirichlet(jnp.ones((n_mixture, bkg_pm1_knots.shape[0]))),
@@ -228,22 +239,37 @@ def make_bkg_model_component(knot_spacings, n_mixture, coord_bounds, data, cmd_f
     }
 
     if cmd_flow is not None and cmd_norm_stats is not None:
-        # NOTE: `flow` and `norm_stats` must NOT be passed as entries in
-        # coord_parameters[CMD_COORD] directly, because ModelComponent.make_dists
-        # interprets any *dict-valued* entry in coord_parameters as the kwargs for
-        # a nested numpyro.sample() call (see model.py's make_dists: `isinstance(val,
-        # dict)` -> `numpyro.sample(numpyro_name, **val)`), and `norm_stats` is
-        # itself a plain dict. Instead, bind `flow`/`norm_stats` as fixed
-        # (non-numpyro, non-sampled) constructor arguments via functools.partial, so
-        # coord_parameters[CMD_COORD] only needs to supply "x" (a plain array, which
-        # is treated as a fixed value and passed through as-is).
+        # PERFORMANCE NOTE: unlike the stream's IsochroneCMD term, this
+        # background CMD term has no learnable parameters attached at all --
+        # `x` is fixed data (`data["phi1"]`), and `cmd_flow`/`cmd_norm_stats`
+        # are frozen/pretrained. That means its log_prob is an exact
+        # constant for the *entire* SVI run (identical every step, every
+        # particle) -- but a real `CalibratedFlowDensity` still runs a full
+        # forward pass through an 8-layer masked-autoregressive spline flow
+        # every time `log_prob` is called, which dominates per-step cost
+        # (measured 10x+ slower SVI with this term included vs. without
+        # it). So we evaluate it ONCE here, up front, and swap in
+        # `FrozenLogProb` -- a trivial lookup of the precomputed array --
+        # for the model that SVI actually optimizes. This changes nothing
+        # about the fit (the term contributes exactly zero gradient either
+        # way); it just avoids recomputing it ~(num_particles * num_steps)
+        # times for no benefit.
+        #
+        # If you need to *sample* from the background CMD flow (e.g. for
+        # diagnostic CMD plots), construct a real
+        # `CalibratedFlowDensity(cmd_flow, cmd_norm_stats, x=...)` directly
+        # instead of pulling it out of `bkg_model` -- `FrozenLogProb`
+        # doesn't implement `.sample()`.
+        _cmd_value = jnp.stack([data["PS_g"], data["PS_r"]], axis=-1)
+        _cmd_log_probs = CalibratedFlowDensity(
+            flow=cmd_flow, norm_stats=cmd_norm_stats, x=data["phi1"]
+        ).log_prob(_cmd_value)
+
         coord_distributions[CMD_COORD] = functools.partial(
-            CalibratedFlowDensity, flow=cmd_flow, norm_stats=cmd_norm_stats
+            FrozenLogProb, log_probs=_cmd_log_probs
         )
-        coord_parameters[CMD_COORD] = {
-            "x": data["phi1"],
-        }
-        conditional_data[CMD_COORD] = {"x": "phi1"}
+        coord_parameters[CMD_COORD] = {}
+        conditional_data[CMD_COORD] = {}
 
     bkg_model = ModelComponent(
         name="background",

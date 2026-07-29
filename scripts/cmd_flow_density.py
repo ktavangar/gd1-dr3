@@ -111,3 +111,69 @@ class CalibratedFlowDensity(dist.Distribution):
     @property
     def support(self):
         return self._flow_density.support
+
+
+class FrozenLogProb(dist.Distribution):
+    """
+    A stand-in distribution that returns precomputed, fixed log-probabilities
+    for a fixed set of observations, instead of recomputing them from a
+    (possibly expensive) underlying density every time ``log_prob`` is
+    called.
+
+    This is only exact -- not an approximation -- when neither the
+    underlying distribution's parameters nor the observed values it's being
+    evaluated at ever change across calls. That's the case for
+    ``CalibratedFlowDensity`` as used for the background's CMD term
+    throughout this pipeline: the pretrained flow weights are frozen, ``x``
+    is bound to fixed per-star ``phi1`` data (not a ``numpyro.sample``d
+    value -- see ``make_bkg_model_component``, which does not attach any
+    learnable ``dm_offset``/``color_offset``-style nuisance parameters to
+    the background CMD term, unlike the stream's ``IsochroneCMD``), and the
+    observed (g0, r0) values are the same fixed data every SVI step and
+    every particle. So its ``log_prob`` is a constant `(N,)` array for the
+    whole SVI run, and evaluating the flow's forward pass (an 8-layer
+    masked-autoregressive spline flow) once, up front, instead of every
+    single step, removes essentially all of its computational cost from
+    fitting without changing the loss/ELBO at all.
+
+    Note: ``sample`` is intentionally not implemented (there's no underlying
+    generative model to draw new samples from here). Anywhere that needs to
+    *sample* from the background CMD flow (e.g. diagnostic CMD plots) should
+    construct and use a real ``CalibratedFlowDensity`` directly, rather than
+    pulling it from a model component that's been swapped over to use this
+    class for fitting.
+
+    Parameters
+    ----------
+    log_probs
+        Precomputed array of log-probabilities, one per observation, e.g.
+        ``CalibratedFlowDensity(...).log_prob(value)`` computed once outside
+        the SVI loop.
+    event_shape
+        Event shape of the original (wrapped) distribution -- e.g. ``(2,)``
+        for a joint (mag1, mag2) CMD term. Only used for bookkeeping
+        (``ConcatenatedDistributions`` inspects ``event_shape`` to figure out
+        how many columns of the joint data to slice out for this term); the
+        actual values passed to ``log_prob`` are ignored.
+    """
+
+    def __init__(
+        self,
+        log_probs: ArrayLike,
+        event_shape: tuple[int, ...] = (2,),
+        validate_args: bool | None = None,
+    ) -> None:
+        self._log_probs = jnp.asarray(log_probs)
+        super().__init__(
+            batch_shape=self._log_probs.shape,
+            event_shape=event_shape,
+            validate_args=validate_args,
+        )
+
+    def log_prob(self, value: ArrayLike, x: ArrayLike | None = None) -> jax.Array | Any:
+        """Ignores ``value``/``x`` entirely and returns the precomputed array."""
+        return self._log_probs
+
+    @property
+    def support(self):
+        return dist.constraints.real_vector
