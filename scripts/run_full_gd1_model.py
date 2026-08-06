@@ -258,8 +258,9 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     
     n_mixture = 2 # number of mixture model components in the background proper motion models
         
-    bkg_model = init_stream.make_bkg_model_component(knot_spacings=bkg_knot_spacings, n_mixture=n_mixture, 
-                                                     coord_bounds=coord_bounds, data=bkg_data)
+    bkg_model = init_stream.make_bkg_model_component(coords=['phi2', 'pm1', 'pm2', 'rv'],
+                                                     knot_spacings=bkg_knot_spacings, n_mixture=n_mixture,
+                                                     coord_bounds=coord_bounds, data=bkg_data, stream_data=stream_data)
     try:
         with open(bkg_filename, 'rb') as input_file_:
             bkg_dict = pickle.load(input_file_)
@@ -379,8 +380,9 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     ## Create and Optimize Background+Stream Mixture Model ##
     #########################################################
 
-    bkg_model_mm = init_stream.make_bkg_model_component(knot_spacings=bkg_knot_spacings, n_mixture=n_mixture, 
-                                                        coord_bounds=coord_bounds, data=run_data)
+    bkg_model_mm = init_stream.make_bkg_model_component(coords=['phi2', 'pm1', 'pm2', 'rv'],
+                                                        knot_spacings=bkg_knot_spacings, n_mixture=n_mixture,
+                                                        coord_bounds=coord_bounds, data=run_data, stream_data=stream_data)
     stream_model_mm = init_stream.make_stream_model_component(knot_spacings=stream_knot_spacings, 
                                                               coord_bounds=coord_bounds, data=run_data)
     stream_bkg_mm = ComponentMixtureModel(dist.Dirichlet(jnp.array([1.0, 1.0])), 

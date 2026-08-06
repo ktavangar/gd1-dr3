@@ -57,10 +57,20 @@ def load_real_data(stream_frame = gc.GD1Koposov10()):
     bkg_data_['pm1_error'] = jnp.sqrt(gd1_coord_pm_cov[:,0,0]) * u.mas/u.yr
     bkg_data_['pm2_error'] = jnp.sqrt(gd1_coord_pm_cov[:,1,1]) * u.mas/u.yr
 
+    stream_data_ = post_cats["stream_data"]
+    stream_data_["pm1"] = stream_data_["pm_phi1_cosphi2_unrefl"]
+    stream_data_["pm2"] = stream_data_["pm_phi2_unrefl"]
+    tbl = pyia.GaiaData(stream_data_)
+    pm_cov, _ = tbl.get_cov(coords=['pmra', 'pmdec'])
+    c = coord.SkyCoord(ra = tbl['ra'], dec=tbl['dec'])
+    gd1_coord_pm_cov = gc.transform_pm_cov(c=c, cov=pm_cov, to_frame=stream_frame)
+    stream_data_['pm1_error'] = jnp.sqrt(gd1_coord_pm_cov[:,0,0]) * u.mas/u.yr
+    stream_data_['pm2_error'] = jnp.sqrt(gd1_coord_pm_cov[:,1,1]) * u.mas/u.yr
+
     pawprint = post_cats["pawprint"]
     print(f"Loaded cached CATS-processed data from {post_cats_path}")
 
-    return run_data_, bkg_data_, pawprint
+    return run_data_, bkg_data_, stream_data_, pawprint
 
 
 def table_to_arrays(tbl):

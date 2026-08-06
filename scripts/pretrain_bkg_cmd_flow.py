@@ -232,7 +232,7 @@ def prepare_training_arrays(
     Returns
     -------
     target
-        Array of shape ``(N, 2)`` with standardized ``(bp_rp, phot_g_mean_mag)``.
+        Array of shape ``(N, 2)`` with standardized ``(mag, mag)``.
     condition
         Array of shape ``(N, 1)`` with standardized ``phi1``.
     norm_stats

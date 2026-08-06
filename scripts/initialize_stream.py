@@ -11,12 +11,14 @@ from stream_membership.distributions import (
     TruncatedNormalSpline,
     DirichletSpline,
     TruncatedNormal1DSplineMixture,
-    LinearGradientSpline
+    LinearGradientSplineWithGap
 )
 from scipy.stats import binned_statistic
 from scipy.interpolate import InterpolatedUnivariateSpline as IUS
 
 from cmd_flow_density import CalibratedFlowDensity, FrozenLogProb
+
+from cats.inputs import stream_inputs
 
 # Coordinate key used for the (color, magnitude) CMD term. A tuple key is
 # used because this is a joint 2D distribution over (mag1, mag2),
@@ -125,15 +127,54 @@ def interpolate_stream_tracks(stream_data, phi1_lim):
 
     return interp_dict
 
-def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, data, cmd_flow=None, cmd_norm_stats=None):
+def _make_jax_gap_center_spline(x_data, y_data, phi1_lim, n_bins=21, k=3):
+    """
+    Same phi1-binned-mean smoothing `interpolate_stream_tracks` uses, for
+    the phi2 gap-center track consumed by `LinearGradientSplineWithGap`.
+
+    NOTE (reverted): this originally built the result with `jax_cosmo`'s
+    JAX-native spline instead of scipy's `IUS`, on the reasoning that
+    `gap_center_spl` gets called on `phi1` from inside
+    `LinearGradientSplineWithGap.log_prob`/`.sample` -- i.e. inside
+    numpyro's jitted/autodiff'd SVI loop -- and a plain scipy spline raises
+    `jax.errors.TracerArrayConversionError` there under `jax.jit`/`jax.grad`
+    in an isolated reproduction. In practice, on the real pipeline here,
+    switching to the JAX spline broke other code downstream that expects a
+    scipy `InterpolatedUnivariateSpline` object specifically (e.g. its
+    scipy-only methods/attributes), and going back to plain `IUS` is what
+    actually runs end to end -- so this is intentionally back to scipy for
+    now. Revisit if/when the downstream scipy-specific usage is updated to
+    tolerate (or is given) a JAX-native spline instead.
+    """
+    stat = binned_statistic(x_data, y_data, bins=jnp.linspace(phi1_lim[0], phi1_lim[1], n_bins))
+    bin_centers = 0.5 * (stat.bin_edges[:-1] + stat.bin_edges[1:])
+    return IUS(bin_centers, stat.statistic, k=k)
+
+def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, data, stream_data=None, cmd_flow=None, cmd_norm_stats=None):
     '''
+    stream_data:
+        Required if ``'phi2' in coords`` (the background phi2 term is a
+        ``LinearGradientSplineWithGap``, which needs to know where the
+        on-sky-masked corridor sits). Must be the actual stream-member
+        sample -- NOT ``data`` (the background-only sample this function is
+        otherwise fit on). ``data`` has, by construction, had the corridor
+        already excluded from it, so using it to estimate *where the
+        corridor is* silently gives the wrong location: it just tracks
+        whatever background stars happen to remain on either side, which
+        has no principled relationship to the actual excluded region. Using
+        the real stream track (or, more precisely, the on-sky mask/pawprint
+        geometry used to build ``data`` in the first place) is what
+        `LinearGradientSplineWithGap`'s docstring means by deriving the gap
+        location "from the known selection/mask geometry ... not from a
+        fitted stream track" -- ``stream_data``'s own (observed, not SVI-fit)
+        track is used here as a close, already-available proxy for that.
     cmd_flow, cmd_norm_stats (optional):
         A pretrained, phi1-conditioned flowjax flow and its accompanying
         normalization stats (as produced/saved by
         ``pretrain_bkg_cmd_flow.py`` / loaded via its ``load_flow``), used to
         add a probabilistic photometric (mag1, mag2) term to the
-        background model. If either is None (the default), no CMD term is added 
-        and this function behaves exactly as before. When provided, ``data`` 
+        background model. If either is None (the default), no CMD term is added
+        and this function behaves exactly as before. When provided, ``data``
         must also include magnitude columns (aligned with "phi1", etc.).
     '''
 
@@ -146,18 +187,33 @@ def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, dat
 
     phi1_knot_spacing, phi2_knot_spacing, pm1_knot_spacing, pm2_knot_spacing, rv_knot_spacing = knot_spacings
 
-    bkg_phi1_knots = jnp.arange(jnp.around(phi1_lim[0]),# + phi1_knot_spacing/2, 
-                                jnp.around(phi1_lim[1])+1e-3,# - phi1_knot_spacing/2 + 1e-3, 
+    bkg_phi1_knots = jnp.arange(jnp.around(phi1_lim[0]),# + phi1_knot_spacing/2,
+                                jnp.around(phi1_lim[1])+1e-3,# - phi1_knot_spacing/2 + 1e-3,
                                 phi1_knot_spacing)
     bkg_phi2_knots = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, phi2_knot_spacing)
     bkg_pm1_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm1_knot_spacing)
     bkg_pm2_knots  = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, pm2_knot_spacing)
     bkg_rv_knots   = jnp.arange(jnp.around(phi1_lim[0]), jnp.around(phi1_lim[1]) + 1e-3, rv_knot_spacing)
-    
+
+    if 'phi2' in coords:
+        # TODO: make this more general so it can be used for other coordinates
+        if stream_data is None:
+            msg = (
+                "make_bkg_model_component(coords=[..., 'phi2', ...]) needs "
+                "`stream_data` (the real stream-member sample) to locate the "
+                "on-sky-masked corridor for the LinearGradientSplineWithGap "
+                "phi2 term -- see this function's docstring."
+            )
+            raise ValueError(msg)
+        # phi2_gap_center_spl = _make_jax_gap_center_spline(
+        #     stream_data["phi1"], stream_data["phi2"], phi1_lim
+        # )
+        phi2_gap_center_spl = interpolate_stream_tracks(stream_data, phi1_lim)['phi2']
+
     coord_distributions = {
         "phi1": IndependentGMM,
     }
-    if 'phi2' in coords: coord_distributions["phi2"] = LinearGradientSpline
+    if 'phi2' in coords: coord_distributions["phi2"] = LinearGradientSplineWithGap
     if 'pm1' in coords: coord_distributions["pm1"] = TruncatedNormal1DSplineMixture
     if 'pm2' in coords: coord_distributions["pm2"] = TruncatedNormal1DSplineMixture
     if 'rv' in coords: coord_distributions["rv"] = TruncatedNormal1DSplineMixture
@@ -184,11 +240,14 @@ def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, dat
     }
     if 'phi2' in coords:
         coord_parameters["phi2"] = {
-                "a_vals": dist.TruncatedNormal(loc=0, scale=0.1, low=-0.2, high=0.2).expand([bkg_phi2_knots.shape[0]]),
+                "a_vals": dist.TruncatedNormal(loc=0, scale=0.1, 
+                                               low=-0.2, high=0.2).expand([bkg_phi2_knots.shape[0]]),
                 "knots": bkg_phi2_knots,
                 "x": data["phi1"],
                 "low": phi2_lim[0],
                 "high": phi2_lim[1],
+                "gap_center_spl": phi2_gap_center_spl,
+                "gap_half_width": stream_inputs['GD-1']['width']/2,
                 "spline_k": 3,
                 "clip_a": (-1+1e-3,1-1e-3),
             }
