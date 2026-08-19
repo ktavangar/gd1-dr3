@@ -168,18 +168,26 @@ def make_lp_dict(model, data, data_err, params):
                 adjusted_spline_scale = jnp.sqrt(spline_scale**2 + _errors**2)
                 lower = (dist_.low - spline_mean) / adjusted_spline_scale
                 higher = (dist_.high - spline_mean) / adjusted_spline_scale
-    
+
                 component_lp = jax.scipy.stats.truncnorm.logpdf(
-                                    x=_data[None, :], 
-                                    loc=spline_mean, 
+                                    x=_data[None, :],
+                                    loc=spline_mean,
                                     scale=adjusted_spline_scale,
                                     a=lower,
                                     b=higher
-                                )            
-                # Including the weights (is this right?)
-                mixture_weights = params[component.name][coord_name]['mixing_distribution']
-                weighted_comp_lp = component_lp + jnp.log(mixture_weights)[:, None]
-    
+                                )
+                # Mixing weights are now a spline function of phi1 (see
+                # spline_mixture.py's `mixing_vals` support) instead of one
+                # global weight, so `params[...]['mixing_distribution']` no
+                # longer exists. Evaluate the per-component mixing logits at
+                # each data point's phi1 -- mirroring exactly how
+                # spline_mean/spline_scale are evaluated above -- and
+                # softmax over components to get properly-normalized,
+                # per-datapoint weights (shape (K, len(data))).
+                mixing_logits = jnp.stack([spl(data['phi1']) for spl in dist_._mixing_spls])
+                log_mixture_weights = jax.nn.log_softmax(mixing_logits, axis=0)
+                weighted_comp_lp = component_lp + log_mixture_weights
+
                 variable_lp = jax.scipy.special.logsumexp(weighted_comp_lp, axis=0)
                 
             else: # shouldn't be used but is here just in case
@@ -282,17 +290,22 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
             },
             "phi2": {},
             "pm1": {
-                "mixing_distribution": jnp.ones(n_mixture) / n_mixture,
+                # mixing_vals are per-knot logits (shape (n_mixture, n_knots)),
+                # not a probability simplex -- all-zeros is the "uninformative"
+                # initialization here, since softmax(0) is a uniform
+                # distribution over components at every phi1 knot (equivalent
+                # to the old flat jnp.ones(n_mixture) / n_mixture init).
+                "mixing_vals": jnp.full((n_mixture, n_pm1_knots), 0.0),
                 "loc_vals": jnp.full((n_mixture, n_pm1_knots), 0),
                 "scale_vals": jnp.full((n_mixture, n_pm1_knots), 5.0),
             },
             "pm2": {
-                "mixing_distribution": jnp.ones(n_mixture) / n_mixture,
+                "mixing_vals": jnp.full((n_mixture, n_pm2_knots), 0.0),
                 "loc_vals": jnp.full((n_mixture, n_pm2_knots), -3.0),
                 "scale_vals": jnp.full((n_mixture, n_pm2_knots), 3.0),
             },
             "rv": {
-                "mixing_distribution": jnp.ones(n_mixture) / n_mixture,
+                "mixing_vals": jnp.full((n_mixture, n_rv_knots), 0.0),
                 "loc_vals": jnp.full((n_mixture, n_rv_knots), -100),
                 "scale_vals": jnp.full((n_mixture,n_rv_knots), 50),
             },

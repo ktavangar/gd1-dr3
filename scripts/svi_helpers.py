@@ -1,6 +1,7 @@
 import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
+import numpy as np
 
 
 import numpyro
@@ -13,6 +14,7 @@ import gala.coordinates as gc
 import pyia
 import astropy.coordinates as coord
 import astropy.units as u
+import astropy.table as at
 
 from pathlib import Path
 import pickle
@@ -40,32 +42,14 @@ def load_real_data(stream_frame = gc.GD1Koposov10()):
     run_data_ = post_cats["run_data"]
     run_data_["pm1"] = run_data_["pm_phi1_cosphi2_unrefl"]
     run_data_["pm2"] = run_data_["pm_phi2_unrefl"]
-    tbl = pyia.GaiaData(run_data_)
-    pm_cov, _ = tbl.get_cov(coords=['pmra', 'pmdec'])
-    c = coord.SkyCoord(ra = tbl['ra'], dec=tbl['dec'])
-    gd1_coord_pm_cov = gc.transform_pm_cov(c=c, cov=pm_cov, to_frame=stream_frame)
-    run_data_['pm1_error'] = jnp.sqrt(gd1_coord_pm_cov[:,0,0]) * u.mas/u.yr
-    run_data_['pm2_error'] = jnp.sqrt(gd1_coord_pm_cov[:,1,1]) * u.mas/u.yr
 
     bkg_data_ = post_cats["bkg_data"]
     bkg_data_["pm1"] = bkg_data_["pm_phi1_cosphi2_unrefl"]
     bkg_data_["pm2"] = bkg_data_["pm_phi2_unrefl"]
-    tbl = pyia.GaiaData(bkg_data_)
-    pm_cov, _ = tbl.get_cov(coords=['pmra', 'pmdec'])
-    c = coord.SkyCoord(ra = tbl['ra'], dec=tbl['dec'])
-    gd1_coord_pm_cov = gc.transform_pm_cov(c=c, cov=pm_cov, to_frame=stream_frame)
-    bkg_data_['pm1_error'] = jnp.sqrt(gd1_coord_pm_cov[:,0,0]) * u.mas/u.yr
-    bkg_data_['pm2_error'] = jnp.sqrt(gd1_coord_pm_cov[:,1,1]) * u.mas/u.yr
 
     stream_data_ = post_cats["stream_data"]
     stream_data_["pm1"] = stream_data_["pm_phi1_cosphi2_unrefl"]
     stream_data_["pm2"] = stream_data_["pm_phi2_unrefl"]
-    tbl = pyia.GaiaData(stream_data_)
-    pm_cov, _ = tbl.get_cov(coords=['pmra', 'pmdec'])
-    c = coord.SkyCoord(ra = tbl['ra'], dec=tbl['dec'])
-    gd1_coord_pm_cov = gc.transform_pm_cov(c=c, cov=pm_cov, to_frame=stream_frame)
-    stream_data_['pm1_error'] = jnp.sqrt(gd1_coord_pm_cov[:,0,0]) * u.mas/u.yr
-    stream_data_['pm2_error'] = jnp.sqrt(gd1_coord_pm_cov[:,1,1]) * u.mas/u.yr
 
     pawprint = post_cats["pawprint"]
     print(f"Loaded cached CATS-processed data from {post_cats_path}")
@@ -80,27 +64,27 @@ def table_to_arrays(tbl):
     run_full_gd1_model.main's convention -- these rows are effectively
     uninformative but keep array shapes consistent).'''
     tbl = tbl.copy()
-    for col in ["rv", "rv_err"]:
+    for col in tbl.colnames:
         if hasattr(tbl[col], "mask"):
-            fill = 0 if col == "rv" else 1e4
+            fill = 1e4 if "error" in col else 0
             tbl[col][tbl[col].mask] = fill
 
     # Drop rows with invalid/sentinel PS1 photometry (e.g. missing-photometry
     # placeholders around -999) BEFORE building the data dict, so the CMD
     # term never sees them.
-    good_phot = (tbl["g0"] > 0) & (tbl["g0"] < 30) & (tbl["r0"] > 0) & (tbl["r0"] < 30)
+    good_phot = (tbl["g_0"] > 0) & (tbl["g_0"] < 30) & (tbl["r_0"] > 0) & (tbl["r_0"] < 30)
     tbl = tbl[good_phot]
 
-    data = {k: jnp.array(tbl[k], dtype="f8") for k in ["phi1", "phi2", "pm1", "pm2", "rv"]}
+    data = {k: jnp.array(tbl[k], dtype="f8") for k in ["phi1", "phi2", "pm1", "pm2", "radial_velocity"]}
     err = {
         "pm1": jnp.array(tbl["pm1_error"], dtype="f8"),
         "pm2": jnp.array(tbl["pm2_error"], dtype="f8"),
-        "rv": jnp.array(tbl["rv_err"], dtype="f8"),
+        "radial_velocity": jnp.array(tbl["radial_velocity_error"], dtype="f8"),
     }
     # CMD columns, needed for the background model's flow term.
     # FIX TO MAKE MORE GENERAL LATER
-    data["PS_g"] = jnp.array(tbl["g0"], dtype="f8")
-    data["PS_r"] = jnp.array(tbl["r0"], dtype="f8")
+    data["PS_g"] = jnp.array(tbl["g_0"], dtype="f8")
+    data["PS_r"] = jnp.array(tbl["r_0"], dtype="f8")
 
     return data, err
 
@@ -110,22 +94,22 @@ def get_coord_bounds(run_data, pawprint):
     initialize_stream.get_bounds_and_grids (pawprint-based pm1/pm2 bounds)
     when a pawprint is available, otherwise falls back to a percentile-based
     proper-motion box (proxy data path).'''
-    if pawprint is not None:
-        return init_stream.get_bounds_and_grids(run_data, pawprint)
+    # if pawprint is not None:
+    #     return init_stream.get_bounds_and_grids(run_data, pawprint)
 
     phi1_lim = (jnp.min(run_data["phi1"]), jnp.max(run_data["phi1"]))
     phi2_lim = (jnp.min(run_data["phi2"]), jnp.max(run_data["phi2"]))
-    pm1_lim = tuple(jnp.percentile(run_data["pm1"], jnp.array([1.0, 99.0])))
-    pm2_lim = tuple(jnp.percentile(run_data["pm2"], jnp.array([1.0, 99.0])))
-    rv_lim = (jnp.min(run_data["rv"]), jnp.max(run_data["rv"]))
+    pm1_lim = tuple(jnp.percentile(run_data["pm1"][run_data['pm1'] != 0], jnp.array([1.0, 99.0])))
+    pm2_lim = tuple(jnp.percentile(run_data["pm2"][run_data['pm2'] != 0], jnp.array([1.0, 99.0])))
+    rv_lim = tuple(jnp.percentile(run_data["radial_velocity"][run_data['radial_velocity'] != 0], jnp.array([0, 100.0])))
 
-    coord_bounds = {"phi1": phi1_lim, "phi2": phi2_lim, "pm1": pm1_lim, "pm2": pm2_lim, "rv": rv_lim}
+    coord_bounds = {"phi1": phi1_lim, "phi2": phi2_lim, "pm1": pm1_lim, "pm2": pm2_lim, "radial_velocity": rv_lim}
     plot_grids = {
         "phi1": jnp.linspace(*phi1_lim, 512),
         "phi2": jnp.linspace(*phi2_lim, 128),
         "pm1": jnp.linspace(*pm1_lim, 128),
         "pm2": jnp.linspace(*pm2_lim, 128),
-        "rv": jnp.linspace(*rv_lim, 128),
+        "radial_velocity": jnp.linspace(*rv_lim, 128),
     }
     return coord_bounds, plot_grids
 
@@ -147,8 +131,8 @@ def run_SVI(model, init_params, data, err=None,
         lr_schedule = optax.join_schedules(
             schedules=[
                 optax.constant_schedule(init_lr),
-                optax.cosine_decay_schedule(init_value=init_lr, decay_steps=quarter_steps + eighth_steps, alpha=1e-2),
-                optax.cosine_decay_schedule(init_value=init_lr / 100, decay_steps=quarter_steps + eighth_steps, alpha=1e-2),
+                optax.cosine_decay_schedule(init_value=init_lr, decay_steps=quarter_steps + eighth_steps, alpha=1e-1),
+                optax.cosine_decay_schedule(init_value=init_lr / 10, decay_steps=quarter_steps + eighth_steps, alpha=1e-1),
             ],
             boundaries=[eighth_steps, half_steps],
         )

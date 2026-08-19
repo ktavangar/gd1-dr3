@@ -394,28 +394,35 @@ def make_diagnostic_plot(
         ax.set_xlabel(f"{mag_param_names[0]}")
         ax.set_ylabel(f"{mag_param_names[1]}")
     
-    axes[1][0].hist2d(real_mag1-real_mag2, real_mag1, bins=200, range=[[-2,3], [10, 22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
-    axes[1][1].hist2d(flow_mag1 - flow_mag2, flow_mag1, bins=200, range=[[-2,3], [10, 22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
+    axes[1][0].hist2d(real_mag1-real_mag2, real_mag1, bins=100, range=[[-0.5,1.5], [12, 22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
+    axes[1][1].hist2d(flow_mag1 - flow_mag2, flow_mag1, bins=100, range=[[-0.5,1.5], [12, 22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
     H1, xe, ye, = np.histogram2d(real_mag1-real_mag2, real_mag1, bins=100, range=[[-0.5,1.5], [12, 22]])
     H2, _, _    = np.histogram2d(flow_mag1 - flow_mag2, flow_mag1, bins=100, range=[[-0.5,1.5], [12, 22]])
     resid = H1-H2
     vmax = np.nanmax(np.abs(resid))
+    resid_im = axes[0][2].pcolormesh(xe, ye, resid.T, cmap=RESID_CMAP, vmin=-vmax, vmax=vmax, rasterized=True)
+    fig.colorbar(resid_im, ax=axes[0][2])
     axes[1][0].pcolormesh(xe, ye, H1.T, norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
     axes[1][1].pcolormesh(xe, ye, H2.T, norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
-    axes[1][2].pcolormesh(xe, ye, resid.T, cmap=RESID_CMAP, vmin=-vmax, vmax=vmax, rasterized=True)
+    frac_resid_im = axes[1][2].pcolormesh(xe, ye, (resid/H2).T, cmap=RESID_CMAP, vmin=-1, vmax=1, rasterized=True)
+    fig.colorbar(frac_resid_im, ax=axes[1][2])
 
     for ax in axes[1,:]:
         ax.set_xlabel(f"{mag_param_names[0]}  - {mag_param_names[1]}")
         ax.set_ylabel(f"{mag_param_names[1]}")
         ax.invert_yaxis()
+        ax.set_ylim()
+    axes[0,2].invert_yaxis()
 
 
-    axes[0,2].plot(losses["train"], label="train")
-    axes[0,2].plot(losses["val"], label="val")
-    axes[0,2].set_xlabel("epoch")
-    axes[0,2].set_ylabel("-log likelihood")
-    axes[0,2].set_title("Training curve")
-    axes[0,2].legend()
+    # axes[0,2].plot(losses["train"], label="train")
+    # axes[0,2].plot(losses["val"], label="val")
+    # axes[0,2].set_xlabel("epoch")
+    # axes[0,2].set_ylabel("-log likelihood")
+    # axes[0,2].set_title("Training curve")
+    # axes[0,2].legend()
+    axes[0,2].set_title("Data-Model Residual")
+    axes[1,2].set_title("Data-Model Residual Fractional")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -424,7 +431,7 @@ def make_diagnostic_plot(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-file", default="/Users/Tavangar/Work/gd1-dr3/data/GD-1_all_data_2026.fits")
+    parser.add_argument("--data-file", default="/Users/Tavangar/Work/gd1-dr3/data/all-gd1-combined.fits")
     parser.add_argument(
         "--bkg-table-pickle",
         default="/Users/Tavangar/Work/gd1-dr3/data/post_cats_data_flow_version.pkl",
@@ -440,18 +447,18 @@ def main():
     parser.add_argument("--stream-width", type=float, default=2.0)
     parser.add_argument("--phi1-min", type=float, default=-100)
     parser.add_argument("--phi1-max", type=float, default=20)
-    parser.add_argument("--mag-param_name1", type=str, default='g0')
-    parser.add_argument("--mag-param_name2", type=str, default='r0')
+    parser.add_argument("--mag-param_name1", type=str, default='g_0')
+    parser.add_argument("--mag-param_name2", type=str, default='r_0')
 
     parser.add_argument("--maxmag", type=float, default=22.0)
-    parser.add_argument("--out", default="data/bkg_cmd_flow")
+    parser.add_argument("--out", default="data/flow_tests/bkg_cmd_flow")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-n", type=int, default=None,
         help="Max number of background sources to train on (random subsample).",
     )
-    parser.add_argument("--flow-layers", type=int, default=64)
-    parser.add_argument("--nn-width", type=int, default=200)
-    parser.add_argument("--nn-depth", type=int, default=4)
+    parser.add_argument("--flow-layers", type=int, default=32)
+    parser.add_argument("--nn-width", type=int, default=50)
+    parser.add_argument("--nn-depth", type=int, default=1)
     parser.add_argument("--rqs-knots", type=int, default=32)
     parser.add_argument("--rqs-interval", type=float, default=5.0)
     parser.add_argument("--max-epochs", type=int, default=200)
@@ -517,7 +524,7 @@ def main():
     print(f"Saved flow weights to {args.out}.eqx and metadata to {args.out}_meta.json")
 
     if not args.no_diagnostic_plot:
-        diag_path = f"{args.out}_diagnostic.png"
+        diag_path = f"{args.out}_diagnostic_layers{args.flow_layers}_width{args.nn_width}_depth{args.nn_depth}.png"
         make_diagnostic_plot(
             diag_path, mag_param_names=MAG_PARAM_NAMES, flow=trained_flow, 
             target=target, condition=condition, norm_stats=norm_stats, 

@@ -121,8 +121,17 @@ def _make_lp_dict(model, data, data_err, params):
                 component_lp = jax.scipy.stats.truncnorm.logpdf(
                     x=_data[None, :], loc=spline_mean, scale=adjusted_spline_scale, a=lower, b=higher
                 )
-                mixture_weights = params[component.name][coord_name]["mixing_distribution"]
-                weighted_comp_lp = component_lp + jnp.log(mixture_weights)[:, None]
+                # Mixing weights are now a spline function of phi1 (see
+                # spline_mixture.py's `mixing_vals` support) instead of one
+                # global weight, so `params[...]["mixing_distribution"]` no
+                # longer exists. Evaluate the per-component mixing logits at
+                # each data point's phi1 -- mirroring exactly how
+                # spline_mean/spline_scale are evaluated above -- and softmax
+                # over components to get properly-normalized, per-datapoint
+                # weights (shape (K, len(data))).
+                mixing_logits = jnp.stack([spl(data["phi1"]) for spl in dist_._mixing_spls])
+                log_mixture_weights = jax.nn.log_softmax(mixing_logits, axis=0)
+                weighted_comp_lp = component_lp + log_mixture_weights
                 variable_lp = jax.scipy.special.logsumexp(weighted_comp_lp, axis=0)
 
             else:

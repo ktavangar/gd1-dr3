@@ -89,16 +89,16 @@ def get_bounds_and_grids(data, pawprint):
         jnp.minimum(jnp.min(pawprint.pmprint.vertices[:, 1]), jnp.min(data['pm2'])),
         jnp.maximum(jnp.max(pawprint.pmprint.vertices[:, 1]), jnp.max(data['pm2'])),
     )
-    rv_lim = (jnp.min(data['rv']), jnp.max(data['rv']))
+    rv_lim = (jnp.min(data['radial_velocity']), jnp.max(data['radial_velocity']))
 
-    coord_bounds = {"phi1": phi1_lim, "phi2": phi2_lim, "pm1": pm1_lim, "pm2": pm2_lim, "rv": rv_lim}
+    coord_bounds = {"phi1": phi1_lim, "phi2": phi2_lim, "pm1": pm1_lim, "pm2": pm2_lim, "radial_velocity": rv_lim}
     
     plot_grids = {
     "phi1": jnp.linspace(*phi1_lim, 512),
     "phi2": jnp.linspace(*phi2_lim, 128),
     "pm1": jnp.linspace(*pm1_lim, 128),
     "pm2": jnp.linspace(*pm2_lim, 128),
-    "rv": jnp.linspace(*rv_lim, 128)
+    "radial_velocity": jnp.linspace(*rv_lim, 128)
 }
     return coord_bounds, plot_grids
 
@@ -118,12 +118,12 @@ def interpolate_stream_tracks(stream_data, phi1_lim):
         0.5 * (_pm2_stat.bin_edges[:-1] + _pm2_stat.bin_edges[1:]), _pm2_stat.statistic, ext=0, k=3
     )
 
-    _rv_stat = binned_statistic(stream_data["phi1"], stream_data["rv"], bins=jnp.linspace(phi1_lim[0], phi1_lim[1], 32))
+    _rv_stat = binned_statistic(stream_data["phi1"], stream_data["radial_velocity"], bins=jnp.linspace(phi1_lim[0], phi1_lim[1], 32))
     _rv_interp = IUS(
         0.5 * (_rv_stat.bin_edges[:-1] + _rv_stat.bin_edges[1:]), _rv_stat.statistic, ext=0, k=3
     )
 
-    interp_dict = {'phi2': _phi2_interp, 'pm1': _pm1_interp, 'pm2': _pm2_interp, 'rv': _rv_interp}
+    interp_dict = {'phi2': _phi2_interp, 'pm1': _pm1_interp, 'pm2': _pm2_interp, 'radial_velocity': _rv_interp}
 
     return interp_dict
 
@@ -183,7 +183,7 @@ def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, dat
     if 'phi2' in coords: phi2_lim = coord_bounds['phi2']
     if 'pm1' in coords: pm1_lim = coord_bounds['pm1']
     if 'pm2' in coords: pm2_lim = coord_bounds['pm2']
-    if 'rv' in coords: rv_lim = coord_bounds['rv']
+    if 'radial_velocity' in coords: rv_lim = coord_bounds['radial_velocity']
 
     phi1_knot_spacing, phi2_knot_spacing, pm1_knot_spacing, pm2_knot_spacing, rv_knot_spacing = knot_spacings
 
@@ -216,13 +216,13 @@ def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, dat
     if 'phi2' in coords: coord_distributions["phi2"] = LinearGradientSplineWithGap
     if 'pm1' in coords: coord_distributions["pm1"] = TruncatedNormal1DSplineMixture
     if 'pm2' in coords: coord_distributions["pm2"] = TruncatedNormal1DSplineMixture
-    if 'rv' in coords: coord_distributions["rv"] = TruncatedNormal1DSplineMixture
+    if 'radial_velocity' in coords: coord_distributions["radial_velocity"] = TruncatedNormal1DSplineMixture
 
     conditional_data = {}
     if 'phi2' in coords: conditional_data["phi2"] = {"x": "phi1"}
     if 'pm1' in coords: conditional_data["pm1"] = {"x": "phi1"}
     if 'pm2' in coords: conditional_data["pm2"] = {"x": "phi1"}
-    if 'rv' in coords: conditional_data["rv"] = {"x": "phi1"}
+    if 'radial_velocity' in coords: conditional_data["radial_velocity"] = {"x": "phi1"}
 
 
     coord_parameters = {
@@ -253,12 +253,21 @@ def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, dat
             }
     if 'pm1' in coords:
         coord_parameters["pm1"] = {
-                # "mixing_vals": dist.Dirichlet(jnp.ones((n_mixture, bkg_pm1_knots.shape[0]))),
-                "mixing_distribution": (
-                    dist.Categorical,
-                    dist.Dirichlet(jnp.ones(n_mixture)) # two truncated normals
-                ),
-                "loc_vals": dist.Uniform(low=-20, high=20).expand([n_mixture, bkg_pm1_knots.shape[0]]),
+                # NOTE: mixing_vals makes the mixing weights between the
+                # n_mixture background components a smooth spline function of
+                # phi1 (evaluated at the same bkg_pm1_knots used for
+                # loc_vals/scale_vals below), instead of a single global
+                # weight shared across all phi1. Each row is a per-component
+                # sequence of knot logits; they're deterministically
+                # spline-interpolated and softmaxed inside
+                # TruncatedNormal1DSplineMixture (see
+                # spline_mixture.py:_make_mixing_distribution). A weakly
+                # informative Normal(0, 1) prior on the raw logits is used
+                # here (analogous to loc_vals/scale_vals), rather than a
+                # Dirichlet draw, since these are unconstrained spline control
+                # points, not a probability simplex themselves.
+                "mixing_vals": dist.Normal(0, 1).expand([n_mixture, bkg_pm1_knots.shape[0]]),
+                "loc_vals": dist.Uniform(low=-10, high=10).expand([n_mixture, bkg_pm1_knots.shape[0]]),
                 "scale_vals": dist.TruncatedNormal(loc=4,scale=3,low=2.78e-3).expand([n_mixture, bkg_pm1_knots.shape[0]]),
                 "knots": bkg_pm1_knots,
                 "x": data["phi1"],
@@ -267,14 +276,19 @@ def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, dat
                 "spline_k": 3,
                 "clip_locs": (-20,20),
                 "clip_scales": (2.78e-3, None),
+                # Components are ordered/identified by loc, not a forced scale
+                # ordering -- see initialization_helpers.relabel_by_loc_continuity.
+                # scale_vals is already positive-constrained on its own via the
+                # TruncatedNormal prior above and clip_scales, so ordered_scales
+                # isn't needed for positivity, only (optionally) identifiability.
+                "ordered_scales": False,
         }
     if 'pm2' in coords:
         coord_parameters["pm2"] = {
-                # "mixing_vals": dist.Dirichlet(jnp.ones((n_mixture, bkg_pm2_knots.shape[0]))),
-                "mixing_distribution": (
-                    dist.Categorical,
-                    dist.Dirichlet(jnp.ones(n_mixture)) # two truncated normals
-                ),
+                # See the matching NOTE on "mixing_vals" in coord_parameters["pm1"]
+                # above -- this makes the pm2 background mixing weights vary
+                # smoothly with phi1 too.
+                "mixing_vals": dist.Normal(0, 1).expand([n_mixture, bkg_pm2_knots.shape[0]]),
                 "loc_vals": dist.Uniform(low=-10, high=10).expand([n_mixture, bkg_pm2_knots.shape[0]]),
                 "scale_vals": dist.TruncatedNormal(loc=4,scale=3,low=2.78e-3).expand([n_mixture, bkg_pm2_knots.shape[0]]),
                 "knots": bkg_pm2_knots,
@@ -284,23 +298,24 @@ def make_bkg_model_component(coords, knot_spacings, n_mixture, coord_bounds, dat
                 "spline_k": 3,
                 "clip_locs": (-10, 10),
                 "clip_scales": (2.78e-3, None),
+                "ordered_scales": False,
         }
-    if 'rv' in coords: 
-        coord_parameters["rv"] = {
-                # "mixing_vals": dist.Dirichlet(jnp.ones((n_mixture, bkg_rv_knots.shape[0]))),
-                "mixing_distribution": (
-                    dist.Categorical,
-                    dist.Dirichlet(jnp.ones(n_mixture)) # two truncated normals
-                ),
+    if 'radial_velocity' in coords:
+        coord_parameters["radial_velocity"] = {
+                # See the matching NOTE on "mixing_vals" in coord_parameters["pm1"]
+                # above -- this makes the radial_velocity background mixing
+                # weights vary smoothly with phi1 too.
+                "mixing_vals": dist.Normal(0, 1).expand([n_mixture, bkg_rv_knots.shape[0]]),
                 "loc_vals": dist.Uniform(low=-500, high=500).expand([n_mixture, bkg_rv_knots.shape[0]]),
                 "scale_vals": dist.TruncatedNormal(loc=100,scale=100,low=0.1).expand([n_mixture, bkg_rv_knots.shape[0]]),
                 "knots": bkg_rv_knots,
                 "x": data["phi1"],
-                "low": -500, #rv_lim[0],
-                "high": 500, #rv_lim[1],
+                "low": rv_lim[0], #-500
+                "high": rv_lim[1], #500
                 "spline_k": 3,
                 "clip_locs": (-500, 500),
                 "clip_scales": (0.1, None),
+                "ordered_scales": False,
             }
 
 
@@ -366,7 +381,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_ma
     phi2_lim = coord_bounds['phi2']
     pm1_lim  = coord_bounds['pm1']
     pm2_lim  = coord_bounds['pm2']
-    rv_lim   = coord_bounds['rv']
+    rv_lim   = coord_bounds['radial_velocity']
 
     phi1_knot_spacing, phi2_knot_spacing, pm1_knot_spacing, pm2_knot_spacing, rv_knot_spacing = knot_spacings
 
@@ -380,14 +395,14 @@ def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_ma
     eval_interp_phi2 = jnp.array(_interp_dict['phi2'](stream_phi2_knots))
     eval_interp_pm1 = jnp.array(_interp_dict['pm1'](stream_pm1_knots))
     eval_interp_pm2 = jnp.array(_interp_dict['pm2'](stream_pm2_knots))
-    eval_interp_rv = jnp.array(_interp_dict['rv'](stream_rv_knots))
+    eval_interp_rv = jnp.array(_interp_dict['radial_velocity'](stream_rv_knots))
     
     coord_distributions = {
         "phi1": IndependentGMM,
         "phi2": TruncatedNormalSpline,
         "pm1": TruncatedNormalSpline,
         "pm2": TruncatedNormalSpline,
-        "rv": TruncatedNormalSpline,
+        "radial_velocity": TruncatedNormalSpline,
     }
     coord_parameters = {
             "phi1": {
@@ -436,7 +451,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_ma
                 "clip_locs": pm2_lim,
                 "clip_scales": (2.78e-3, 2),
             },
-            "rv": {
+            "radial_velocity": {
                 "loc_vals": dist.Uniform(*rv_lim).expand([stream_rv_knots.shape[0]]),
                 # "loc_vals": dist.TruncatedNormal(loc=eval_interp_rv, scale=200, low=-500,high=500).expand([stream_rv_knots.shape[0]]),
                 "scale_vals": dist.TruncatedNormal(loc=1,scale=5,low=0.1, high=100).expand([stream_rv_knots.shape[0]]),
@@ -452,7 +467,7 @@ def make_stream_model_component(knot_spacings, coord_bounds, data, rv_min, rv_ma
     conditional_data = {"phi2": {"x": "phi1"},
                           "pm1": {"x": "phi1"},
                           "pm2": {"x": "phi1"},
-                          "rv": {"x": "phi1"}}
+                          "radial_velocity": {"x": "phi1"}}
 
     if stream_isochrone is not None:
         # NOTE: see the matching NOTE in make_bkg_model_component -- fixed
@@ -521,7 +536,7 @@ def make_offtrack_model_component(offtrack_dx, stream_model, coord_bounds):
         ("phi1", "phi2"): IndependentGMM,
         "pm1": stream_model.coord_distributions["pm1"],
         "pm2": stream_model.coord_distributions["pm2"],
-        "rv": stream_model.coord_distributions["rv"],
+        "radial_velocity": stream_model.coord_distributions["radial_velocity"],
     }
     coord_parameters = {
         ("phi1", "phi2"): {
@@ -542,9 +557,9 @@ def make_offtrack_model_component(offtrack_dx, stream_model, coord_bounds):
         # a mixture model
         "pm1": stream_model.coord_parameters["pm1"],
         "pm2": stream_model.coord_parameters["pm2"],
-        "rv": stream_model.coord_parameters["rv"],
+        "radial_velocity": stream_model.coord_parameters["radial_velocity"],
     }
-    conditional_data = {"pm1": {"x": "phi1"}, "pm2": {"x": "phi1"}, "rv": {"x": "phi1"}}
+    conditional_data = {"pm1": {"x": "phi1"}, "pm2": {"x": "phi1"}, "radial_velocity": {"x": "phi1"}}
 
     if CMD_COORD in stream_model.coord_distributions:
         # `ComponentMixtureModel` requires every component in a mixture to
