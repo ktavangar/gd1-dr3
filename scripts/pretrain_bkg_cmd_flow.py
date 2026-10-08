@@ -97,7 +97,9 @@ def load_background_table(
         layout is used. Defaults to ``"bkg_data"``.
     """
     with open(pickle_path, "rb") as f:
+        print(f"Loading background table from {pickle_path}...")
         obj = pickle.load(f)
+
 
     bkg_tbl = obj[key] if isinstance(obj, dict) else obj
     return bkg_tbl
@@ -384,20 +386,20 @@ def make_diagnostic_plot(
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
-    axes[0][0].hist2d(real_mag1, real_mag2, bins=200, range=[[10,22], [10,22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
+    axes[0][0].hist2d(real_mag1, real_mag2, bins=200, range=[[10,23], [10,23]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
     axes[0][0].set_title(f"Real background (N={n_draw})")
 
-    axes[0][1].hist2d(flow_mag1, flow_mag2, bins=200, range=[[10,22], [10,22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
+    axes[0][1].hist2d(flow_mag1, flow_mag2, bins=200, range=[[10,23], [10,23]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
     axes[0][1].set_title("Flow samples (same phi1 values)")
 
     for ax in axes[0,:2]:
         ax.set_xlabel(f"{mag_param_names[0]}")
         ax.set_ylabel(f"{mag_param_names[1]}")
     
-    axes[1][0].hist2d(real_mag1-real_mag2, real_mag1, bins=100, range=[[-0.5,1.5], [12, 22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
-    axes[1][1].hist2d(flow_mag1 - flow_mag2, flow_mag1, bins=100, range=[[-0.5,1.5], [12, 22]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
-    H1, xe, ye, = np.histogram2d(real_mag1-real_mag2, real_mag1, bins=100, range=[[-0.5,1.5], [12, 22]])
-    H2, _, _    = np.histogram2d(flow_mag1 - flow_mag2, flow_mag1, bins=100, range=[[-0.5,1.5], [12, 22]])
+    axes[1][0].hist2d(real_mag1-real_mag2, real_mag1, bins=100, range=[[-0.5,1.5], [12, 23]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
+    axes[1][1].hist2d(flow_mag1 - flow_mag2, flow_mag1, bins=100, range=[[-0.5,1.5], [12, 23]], norm=mpl.colors.LogNorm(), cmap=CMAP, rasterized=True)
+    H1, xe, ye, = np.histogram2d(real_mag1-real_mag2, real_mag1, bins=100, range=[[-0.5,1.5], [12, 23]])
+    H2, _, _    = np.histogram2d(flow_mag1 - flow_mag2, flow_mag1, bins=100, range=[[-0.5,1.5], [12, 23]])
     resid = H1-H2
     vmax = np.nanmax(np.abs(resid))
     resid_im = axes[0][2].pcolormesh(xe, ye, resid.T, cmap=RESID_CMAP, vmin=-vmax, vmax=vmax, rasterized=True)
@@ -434,7 +436,7 @@ def main():
     parser.add_argument("--data-file", default="/Users/Tavangar/Work/gd1-dr3/data/all-gd1-combined.fits")
     parser.add_argument(
         "--bkg-table-pickle",
-        default="/Users/Tavangar/Work/gd1-dr3/data/post_cats_data_flow_version.pkl",
+        default="/Users/Tavangar/Work/gd1-dr3/data/for_svi_w_isochrone_cut.pkl",
         help=(
             "Path to a pickle containing the real, CATS-selected bkg_data "
             "table (dict with a 'bkg_data' key, or a bare Table). If given, "
@@ -450,8 +452,8 @@ def main():
     parser.add_argument("--mag-param_name1", type=str, default='g_0')
     parser.add_argument("--mag-param_name2", type=str, default='r_0')
 
-    parser.add_argument("--maxmag", type=float, default=22.0)
-    parser.add_argument("--out", default="data/flow_tests/bkg_cmd_flow")
+    parser.add_argument("--maxmag", type=float, default=23.0)
+    parser.add_argument("--out", default="data/flow_isochrone_cut/bkg_cmd_flow")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-n", type=int, default=None,
         help="Max number of background sources to train on (random subsample).",

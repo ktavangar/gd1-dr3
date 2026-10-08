@@ -60,6 +60,7 @@ from stream_membership.distributions import (
     IndependentGMM,
     TruncatedNormalSpline,
     TruncatedNormal1DSplineMixture,
+    TruncatedNormalGMMConditional,
 )
 
 __all__ = ["compute_membership_probs", "plot_stream_cmd_fit"]
@@ -81,6 +82,17 @@ def _make_lp_dict(model, data, data_err, params):
     stream CMD term correctly for free, since ``IsochroneCMD.log_prob``
     follows the same ``(value, x=...)`` calling convention as the other
     phi1-conditioned distributions here.
+
+    pm1/pm2/radial_velocity are ragged (not every star has every
+    measurement, see ``svi_helpers.table_to_arrays``), so each is evaluated
+    against its own valid-star phi1 (and, for the offtrack component's
+    ``TruncatedNormalGMMConditional`` terms, joint (phi1, phi2)) subsample
+    via ``init_stream._coord_x``/``_coord_x2``, then scattered back into a
+    full-length (``len(data["phi1"])``-shaped) array via
+    ``init_stream._scatter_ragged_lp`` before being stacked alongside the
+    full-length coordinates -- missing measurements simply contribute 0 to
+    that star's total log-posterior for this component, rather than being
+    compared against a value they don't have.
     """
     lp_dict = {}
 
@@ -91,17 +103,47 @@ def _make_lp_dict(model, data, data_err, params):
         for i, (coord_name, dist_) in enumerate(dists.items()):
             if isinstance(coord_name, tuple):  # e.g. (phi1, phi2) offtrack, or the CMD term
                 _data = jnp.stack([data[k] for k in coord_name], axis=-1)
-                _errors = jnp.stack([data_err[k] for k in coord_name], axis=-1)
             else:
                 _data = jnp.asarray(data[coord_name])
-                _errors = jnp.asarray(data_err[coord_name])
+            # NOTE: `_errors` is deliberately *not* computed here for every
+            # coordinate -- `data_err` (from `table_to_arrays`) only has
+            # entries for the ragged pm1/pm2/radial_velocity coordinates.
+            # phi1/phi2 (position space) and the CMD magnitudes are treated
+            # as noiseless, so they have no `data_err` entry at all; eagerly
+            # looking one up for them raised `KeyError: 'phi1'`. Each branch
+            # below that actually needs an error term looks it up itself.
 
             if isinstance(dist_, (IndependentGMM, dist.Uniform)):
                 variable_lp = dist_.log_prob(value=_data)
 
+            elif isinstance(dist_, TruncatedNormalGMMConditional):
+                # pm1/pm2/radial_velocity for the offtrack component: ragged
+                # (not every star has this measurement) and conditioned on
+                # this coordinate's own valid-star (phi1, phi2) pairs --
+                # exactly the `x` convention `make_offtrack_model_component`
+                # built at fit time (see `init_stream._coord_x`/`_coord_x2`),
+                # so the full 2D joint responsibility is used here too,
+                # rather than falling back to a phi1-only marginal.
+                _x = jnp.stack(
+                    [init_stream._coord_x(data, coord_name), init_stream._coord_x2(data, coord_name)],
+                    axis=-1,
+                )
+                variable_lp = dist_.log_prob(value=_data, x=_x)
+
             elif isinstance(dist_, TruncatedNormalSpline):
-                spline_mean = dist_._loc_spl(data["phi1"])
-                adjusted_spline_scale = jnp.sqrt(dist_._scale_spl(data["phi1"]) ** 2 + _errors**2)
+                # Not every TruncatedNormalSpline coordinate has a real
+                # per-star error in `data_err` -- only the ragged pm1/pm2/
+                # radial_velocity measurements do. Other coordinates using
+                # this same distribution class (e.g. the stream's "phi2"
+                # track) are treated as noiseless, so default to 0 error
+                # rather than assuming a `data_err` entry exists.
+                _errors = jnp.asarray(data_err.get(coord_name, 0.0))
+                # Ragged coordinates (pm1/pm2/radial_velocity) have their own,
+                # generally-shorter valid-star phi1 subsample -- `_coord_x`
+                # returns that if present, else falls back to `data["phi1"]`.
+                _phi1 = init_stream._coord_x(data, coord_name)
+                spline_mean = dist_._loc_spl(_phi1)
+                adjusted_spline_scale = jnp.sqrt(dist_._scale_spl(_phi1) ** 2 + _errors**2)
                 lower = (dist_.low - spline_mean) / adjusted_spline_scale
                 higher = (dist_.high - spline_mean) / adjusted_spline_scale
                 variable_lp = jax.scipy.stats.truncnorm.logpdf(
@@ -109,11 +151,16 @@ def _make_lp_dict(model, data, data_err, params):
                 )
 
             elif isinstance(dist_, TruncatedNormal1DSplineMixture):
+                # NOTE: see the matching NOTE in the TruncatedNormalSpline
+                # branch above -- default to 0 error for any coordinate that
+                # has no real per-star error in `data_err`.
+                _errors = jnp.asarray(data_err.get(coord_name, 0.0))
+                _phi1 = init_stream._coord_x(data, coord_name)
                 spline_mean = jnp.stack(
-                    [dist_._component_distributions[i]._loc_spl(data["phi1"]) for i in range(dist_._n_components)]
+                    [dist_._component_distributions[i]._loc_spl(_phi1) for i in range(dist_._n_components)]
                 )
                 spline_scale = jnp.stack(
-                    [dist_._component_distributions[i]._scale_spl(data["phi1"]) for i in range(dist_._n_components)]
+                    [dist_._component_distributions[i]._scale_spl(_phi1) for i in range(dist_._n_components)]
                 )
                 adjusted_spline_scale = jnp.sqrt(spline_scale**2 + _errors**2)
                 lower = (dist_.low - spline_mean) / adjusted_spline_scale
@@ -129,7 +176,7 @@ def _make_lp_dict(model, data, data_err, params):
                 # spline_mean/spline_scale are evaluated above -- and softmax
                 # over components to get properly-normalized, per-datapoint
                 # weights (shape (K, len(data))).
-                mixing_logits = jnp.stack([spl(data["phi1"]) for spl in dist_._mixing_spls])
+                mixing_logits = jnp.stack([spl(_phi1) for spl in dist_._mixing_spls])
                 log_mixture_weights = jax.nn.log_softmax(mixing_logits, axis=0)
                 weighted_comp_lp = component_lp + log_mixture_weights
                 variable_lp = jax.scipy.special.logsumexp(weighted_comp_lp, axis=0)
@@ -137,6 +184,18 @@ def _make_lp_dict(model, data, data_err, params):
             else:
                 # Handles IsochroneCMD (and anything else phi1-conditioned).
                 variable_lp = dist_.log_prob(value=_data, x=jnp.asarray(data["phi1"]))
+
+            # Ragged coordinates (pm1/pm2/radial_velocity) produce a
+            # shorter-than-full-length `variable_lp` here -- scatter it back
+            # into a full-length array (0 for stars missing this coordinate,
+            # so they simply don't contribute this term to the summed total
+            # log-posterior below) before stacking. Full-length coordinates
+            # (phi1, phi2, and tuple-keyed terms like the offtrack spatial
+            # grid or the CMD term) have no valid-mask entry in `data`, so
+            # this is a no-op for them.
+            mask_key = None if isinstance(coord_name, tuple) else init_stream._valid_mask_key(coord_name)
+            if mask_key is not None and mask_key in data:
+                variable_lp = init_stream._scatter_ragged_lp(len(data["phi1"]), data[mask_key], variable_lp)
 
             component_lp_stack = component_lp_stack.at[i].set(variable_lp)
 

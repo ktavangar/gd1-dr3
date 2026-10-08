@@ -9,7 +9,7 @@ from numpyro.infer.autoguide import AutoDelta, AutoNormal, AutoDiagonalNormal
 import optax
 
 from stream_membership import ComponentMixtureModel, ModelComponent
-from stream_membership.distributions import IndependentGMM, TruncatedNormalSpline, DirichletSpline, TruncatedNormal1DSplineMixture
+from stream_membership.distributions import IndependentGMM, TruncatedNormalSpline, DirichletSpline, TruncatedNormal1DSplineMixture, TruncatedNormalGMMConditional
 from stream_membership.plot import plot_data_projections
 
 import astropy.table as at
@@ -28,6 +28,21 @@ from cats.pawprint.pawprint import Pawprint
 from cats.CMD import Isochrone
 from cats.inputs import stream_inputs as inputs
 from cats.proper_motions import ProperMotionSelection, rough_pm_poly
+
+# Offtrack spatial-term options, forwarded to
+# `initialize_stream.make_offtrack_model_component`. Defaults reproduce the
+# original model (rectangular lattice, sampled widths, Dirichlet weights).
+# New setup: lattice="diamond", fixed_scales=True, weight_prior="softmax"
+# (and pass a larger offtrack_dx for the same node count -- see that
+# function's docstring).
+OFFTRACK_OPTS = dict(
+    lattice="rectangular",
+    fixed_scales=False,
+    sigma_frac=1.0,
+    weight_prior="dirichlet",
+    logit_scale=2.0,
+)
+
 
 def run_CATS(data, stream_name, phi1_lim):
     
@@ -113,7 +128,12 @@ def get_svi_params(model, data, svi_results, guide, num_samples=1, key=jax.rando
 
     pred_dist = Predictive(guide, params=svi_results.params, num_samples=num_samples)
     pars_ = pred_dist(key, data=data)
-    pars = {k: jnp.median(v, axis=0) for k, v in pars_.items() if (k != '_auto_latent' and k != 'mixture:modeldata')}
+    # The old single joint site "mixture:modeldata" is now split into
+    # multiple per-coordinate sites named f"{coord}:modeldata" (e.g.
+    # "pm1:modeldata", "PS_g-PS_r:modeldata") by the ragged-plate
+    # ComponentMixtureModel.__call__, so filter by suffix rather than exact
+    # match to drop all of them.
+    pars = {k: jnp.median(v, axis=0) for k, v in pars_.items() if (k != '_auto_latent' and not k.endswith(':modeldata'))}
     pars_expanded = model.expand_numpyro_params(pars)
 
     return pars_expanded
@@ -131,31 +151,61 @@ def make_lp_dict(model, data, data_err, params):
         component_lp_stack = jnp.empty((len(dists), len(data['phi1'])))
     
         for i, (coord_name, dist_) in enumerate(dists.items()):
-            if isinstance(coord_name, tuple): # (phi1, phi2) offtrack
+            if isinstance(coord_name, tuple): # (phi1, phi2) offtrack, or the CMD term
                 _data = jnp.stack([data[k] for k in coord_name], axis=-1)
-                _errors = jnp.stack([data_err[k] for k in coord_name], axis=-1)   # Include errors
             else:
                 _data = jnp.asarray(data[coord_name])
-                _errors = jnp.asarray(data_err[coord_name])  # Include errors
-            
+            # NOTE: `_errors` is deliberately *not* computed here for every
+            # coordinate -- `data_err` (from `table_to_arrays`) only has
+            # entries for the ragged pm1/pm2/radial_velocity coordinates.
+            # phi1/phi2 (position space) and the CMD magnitudes are treated
+            # as noiseless, so they have no `data_err` entry at all; eagerly
+            # looking one up for them raised `KeyError`. Each branch below
+            # that actually needs an error term looks it up itself.
+
             if isinstance(dist_, (IndependentGMM, dist.Uniform)):
                 # IndependentGMM is only used for position space at the moment so ignoring errors is fine
                 variable_lp  = dist_.log_prob(value=_data)
-                
+
+            elif isinstance(dist_, TruncatedNormalGMMConditional):
+                # pm1/pm2/radial_velocity for the offtrack component: ragged
+                # (not every star has this measurement) and conditioned on
+                # this coordinate's own valid-star (phi1, phi2) pairs --
+                # exactly the `x` convention `make_offtrack_model_component`
+                # built at fit time (see `init_stream._coord_x`/`_coord_x2`),
+                # so the full 2D joint responsibility is used here too,
+                # rather than falling back to a phi1-only marginal.
+                _x = jnp.stack(
+                    [init_stream._coord_x(data, coord_name), init_stream._coord_x2(data, coord_name)],
+                    axis=-1,
+                )
+                variable_lp = dist_.log_prob(value=_data, x=_x)
+
             elif isinstance(dist_, TruncatedNormalSpline): # One truncated spline
                 # Get the spline mean and scale at every data point's phi1
                 #  the scale should the the rms of the model scale and the error on that point
-                spline_mean = dist_._loc_spl(data['phi1'])
-                adjusted_spline_scale = jnp.sqrt(dist_._scale_spl(data['phi1'])**2 + _errors**2)
-    
+                # NOTE: not every TruncatedNormalSpline coordinate has a real
+                # per-star error in `data_err` -- only the ragged pm1/pm2/
+                # radial_velocity measurements do. Other coordinates using
+                # this same distribution class (e.g. the stream's "phi2"
+                # track) are treated as noiseless, so default to 0 error
+                # rather than assuming a `data_err` entry exists.
+                _errors = jnp.asarray(data_err.get(coord_name, 0.0))  # Include errors, if any
+                # Ragged coordinates (pm1/pm2/radial_velocity) have their own,
+                # generally-shorter valid-star phi1 subsample -- `_coord_x`
+                # returns that if present, else falls back to `data['phi1']`.
+                _phi1 = init_stream._coord_x(data, coord_name)
+                spline_mean = dist_._loc_spl(_phi1)
+                adjusted_spline_scale = jnp.sqrt(dist_._scale_spl(_phi1)**2 + _errors**2)
+
                 # Get lower and upper bounds of truncated normal (in terms of number of stds from mean)
                 lower = (dist_.low - spline_mean) / adjusted_spline_scale
                 higher = (dist_.high - spline_mean) / adjusted_spline_scale
-                
+
                 # Create a truncated normal per data point
                 variable_lp = jax.scipy.stats.truncnorm.logpdf(
-                                    x=_data, 
-                                    loc=spline_mean, 
+                                    x=_data,
+                                    loc=spline_mean,
                                     scale=adjusted_spline_scale,
                                     a=lower,
                                     b=higher
@@ -163,8 +213,13 @@ def make_lp_dict(model, data, data_err, params):
             elif isinstance(dist_, TruncatedNormal1DSplineMixture): # mixture of truncated splines
                 # Similar to above
                 #  Create the mean and scale at each data point's 'phi1' for each of the truncated splines (shape (K, len(data)))
-                spline_mean = jnp.stack([dist_._component_distributions[i]._loc_spl(data['phi1']) for i in range(dist_._n_components)])
-                spline_scale = jnp.stack([dist_._component_distributions[i]._scale_spl(data['phi1']) for i in range(dist_._n_components)])
+                # NOTE: see the matching NOTE in the TruncatedNormalSpline
+                # branch above -- default to 0 error for any coordinate that
+                # has no real per-star error in `data_err`.
+                _errors = jnp.asarray(data_err.get(coord_name, 0.0))  # Include errors, if any
+                _phi1 = init_stream._coord_x(data, coord_name)
+                spline_mean = jnp.stack([dist_._component_distributions[i]._loc_spl(_phi1) for i in range(dist_._n_components)])
+                spline_scale = jnp.stack([dist_._component_distributions[i]._scale_spl(_phi1) for i in range(dist_._n_components)])
                 adjusted_spline_scale = jnp.sqrt(spline_scale**2 + _errors**2)
                 lower = (dist_.low - spline_mean) / adjusted_spline_scale
                 higher = (dist_.high - spline_mean) / adjusted_spline_scale
@@ -184,15 +239,27 @@ def make_lp_dict(model, data, data_err, params):
                 # spline_mean/spline_scale are evaluated above -- and
                 # softmax over components to get properly-normalized,
                 # per-datapoint weights (shape (K, len(data))).
-                mixing_logits = jnp.stack([spl(data['phi1']) for spl in dist_._mixing_spls])
+                mixing_logits = jnp.stack([spl(_phi1) for spl in dist_._mixing_spls])
                 log_mixture_weights = jax.nn.log_softmax(mixing_logits, axis=0)
                 weighted_comp_lp = component_lp + log_mixture_weights
 
                 variable_lp = jax.scipy.special.logsumexp(weighted_comp_lp, axis=0)
-                
+
             else: # shouldn't be used but is here just in case
                 variable_lp = dist_.log_prob(value=_data, x=jnp.asarray(data['phi1']))
-    
+
+            # Ragged coordinates (pm1/pm2/radial_velocity) produce a
+            # shorter-than-full-length `variable_lp` here -- scatter it back
+            # into a full-length array (0 for stars missing this coordinate,
+            # so they simply don't contribute this term to the summed total
+            # log-posterior below) before stacking. Full-length coordinates
+            # (phi1, phi2, and tuple-keyed terms like the offtrack spatial
+            # grid or the CMD term) have no valid-mask entry in `data`, so
+            # this is a no-op for them.
+            mask_key = None if isinstance(coord_name, tuple) else init_stream._valid_mask_key(coord_name)
+            if mask_key is not None and mask_key in data:
+                variable_lp = init_stream._scatter_ragged_lp(len(data['phi1']), data[mask_key], variable_lp)
+
             # add log prob from this coordinate to the array for this component log prob
             component_lp_stack = component_lp_stack.at[i].set(variable_lp)
     
@@ -229,30 +296,65 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     ## Setup the Model ##
     #####################
 
-    # Fill in rv data for rows without it (rv=0, rv_err=1e4)
-    run_data_['rv'][run_data_['rv'].mask] = 0
-    run_data_['rv_err'][run_data_['rv_err'].mask] = 1e4
+    def _table_to_ragged_data(tbl_):
+        """Ragged, per-coordinate-plate data dict for a CATS-processed
+        table. pm1/pm2/rv can be masked columns (missing measurements), so
+        -- unlike the old sentinel-fill convention (rv=0, rv_err=1e4) --
+        each is subset to its own valid-only rows independently, and each
+        ragged coordinate's own valid-star phi1 (and phi2) subsample is
+        tagged alongside it via `init_stream._phi1_key`/`_phi2_key` (mirrors
+        `svi_helpers.table_to_arrays`). The phi2 tagging is needed for
+        `make_offtrack_model_component`'s D=2 (phi1, phi2) grid, whose
+        pm1/pm2/radial_velocity conditioning arrays are joint (phi1, phi2)
+        pairs, not phi1 alone -- see `init_stream._coord_x2`. Note the
+        coordinate is renamed "rv" -> "radial_velocity" here to match the
+        key `initialize_stream.make_bkg_model_component`/
+        `make_stream_model_component`/`ComponentMixtureModel.__call__`
+        actually look for -- under the old shared-plate architecture a
+        stray "rv"/"radial_velocity" mismatch just meant the rv term was
+        silently absent from `coord_parameters`; under the new ragged-plate
+        architecture a missing coordinate is *silently skipped* by design
+        (see `ComponentMixtureModel.__call__`), so keeping the mismatch
+        here would now silently drop the radial-velocity term from every
+        model built by this script instead of merely being inert.
 
-    bkg_data_['rv'][bkg_data_['rv'].mask] = 0
-    bkg_data_['rv_err'][bkg_data_['rv_err'].mask] = 1e4
+        Also tags each ragged coordinate's full-length valid-star boolean
+        mask via `init_stream._valid_mask_key` (mirrors
+        `svi_helpers.table_to_arrays`), so downstream per-star log-posterior
+        code (`make_lp_dict`) can scatter that coordinate's ragged log-probs
+        back into a full-length array aligned with `data_["phi1"]`.
+        """
+        data_ = {
+            "phi1": jnp.array(tbl_["phi1"], dtype="f8"),
+            "phi2": jnp.array(tbl_["phi2"], dtype="f8"),
+        }
+        err_ = {}
+        for coord, col, err_col in [
+            ("pm1", "pm1", "pm1_error"),
+            ("pm2", "pm2", "pm2_error"),
+            ("radial_velocity", "rv", "rv_err"),
+        ]:
+            values = tbl_[col]
+            errors = tbl_[err_col]
+            valid = jnp.ones(len(tbl_), dtype=bool)
+            if hasattr(values, "mask"):
+                valid = valid & jnp.array(~values.mask)
+            if hasattr(errors, "mask"):
+                valid = valid & jnp.array(~errors.mask)
+            data_[coord] = jnp.array(values, dtype="f8")[valid]
+            err_[coord] = jnp.array(errors, dtype="f8")[valid]
+            data_[init_stream._phi1_key(coord)] = data_["phi1"][valid]
+            data_[init_stream._phi2_key(coord)] = data_["phi2"][valid]
+            # Full-length valid-star mask, needed to scatter this
+            # coordinate's ragged per-star values (e.g. log-probs) back into
+            # a full-length array in `make_lp_dict`. See
+            # `init_stream._valid_mask_key`/`_scatter_ragged_lp`.
+            data_[init_stream._valid_mask_key(coord)] = valid
+        return data_, err_
 
-    stream_data_['rv'][stream_data_['rv'].mask] = 0
-    stream_data_['rv_err'][stream_data_['rv_err'].mask] = 1e4
-        
-    run_data = {k: jnp.array(run_data_[k], dtype="f8") for k in ['phi1', 'phi2', 'pm1', 'pm2', 'rv']}
-    run_data_err = {'pm1': jnp.array(run_data_['pm1_error'], dtype="f8"),
-                    'pm2': jnp.array(run_data_['pm2_error'], dtype="f8"),
-                    'rv': jnp.array(run_data_['rv_err'], dtype="f8")}
-
-    bkg_data = {k: jnp.array(bkg_data_[k], dtype="f8") for k in ['phi1', 'phi2', 'pm1', 'pm2', 'rv']}
-    bkg_data_err = {'pm1': jnp.array(bkg_data_['pm1_error'], dtype="f8"),
-                    'pm2': jnp.array(bkg_data_['pm2_error'], dtype="f8"),
-                    'rv': jnp.array(bkg_data_['rv_err'], dtype="f8")}
-
-    stream_data = {k: jnp.array(stream_data_[k], dtype="f8") for k in ['phi1', 'phi2', 'pm1', 'pm2', 'rv']}
-    stream_data_err = {'pm1': jnp.array(stream_data_['pm1_error'], dtype="f8"),
-                    'pm2': jnp.array(stream_data_['pm2_error'], dtype="f8"),
-                    'rv': jnp.array(stream_data_['rv_err'], dtype="f8")}
+    run_data, run_data_err = _table_to_ragged_data(run_data_)
+    bkg_data, bkg_data_err = _table_to_ragged_data(bkg_data_)
+    stream_data, stream_data_err = _table_to_ragged_data(stream_data_)
 
     coord_bounds, _ = init_stream.get_bounds_and_grids(run_data, pawprint)
     
@@ -266,7 +368,7 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     
     n_mixture = 2 # number of mixture model components in the background proper motion models
         
-    bkg_model = init_stream.make_bkg_model_component(coords=['phi2', 'pm1', 'pm2', 'rv'],
+    bkg_model = init_stream.make_bkg_model_component(coords=['phi2', 'pm1', 'pm2', 'radial_velocity'],
                                                      knot_spacings=bkg_knot_spacings, n_mixture=n_mixture,
                                                      coord_bounds=coord_bounds, data=bkg_data, stream_data=stream_data)
     try:
@@ -281,7 +383,7 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         n_phi1_knots = bkg_model.coord_parameters['phi1']['locs'].shape[-1]
         n_pm1_knots = bkg_model.coord_parameters['pm1']['knots'].shape[-1]
         n_pm2_knots = bkg_model.coord_parameters['pm2']['knots'].shape[-1]
-        n_rv_knots = bkg_model.coord_parameters['rv']['knots'].shape[-1]
+        n_rv_knots = bkg_model.coord_parameters['radial_velocity']['knots'].shape[-1]
         
         bkg_init_params = {
             "phi1": {
@@ -329,8 +431,17 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     ## Create and Optimize Stream Model ##
     ######################################
     
-    stream_model = init_stream.make_stream_model_component(knot_spacings=stream_knot_spacings, 
-                                                           coord_bounds=coord_bounds, data=stream_data)
+    # `make_stream_model_component` needs the phi1 range spanned by stars
+    # with valid radial-velocity measurements to lay down its rv knots --
+    # use the ragged radial_velocity coordinate's own phi1 subsample (see
+    # `_table_to_ragged_data` above), matching the pattern already used in
+    # the notebooks (e.g. `4-svi_runs.ipynb`).
+    rv_min = jnp.min(stream_data[init_stream._phi1_key("radial_velocity")])
+    rv_max = jnp.max(stream_data[init_stream._phi1_key("radial_velocity")])
+
+    stream_model = init_stream.make_stream_model_component(knot_spacings=stream_knot_spacings,
+                                                           coord_bounds=coord_bounds, data=stream_data,
+                                                           rv_min=rv_min, rv_max=rv_max)
     try:
         with open(stream_filename, 'rb') as input_file_:
             stream_dict = pickle.load(input_file_)
@@ -343,13 +454,13 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         stream_phi2_knots = stream_model.coord_parameters['phi2']['knots']
         stream_pm1_knots = stream_model.coord_parameters['pm1']['knots']
         stream_pm2_knots = stream_model.coord_parameters['pm2']['knots']
-        stream_rv_knots = stream_model.coord_parameters['rv']['knots']
+        stream_rv_knots = stream_model.coord_parameters['radial_velocity']['knots']
         
         _interp_dict = init_stream.interpolate_stream_tracks(stream_data, phi1_lim)
         eval_interp_phi2 = jnp.array(_interp_dict['phi2'](stream_phi2_knots))
         eval_interp_pm1 = jnp.array(_interp_dict['pm1'](stream_pm1_knots))
         eval_interp_pm2 = jnp.array(_interp_dict['pm2'](stream_pm2_knots))
-        eval_interp_rv = jnp.array(_interp_dict['rv'](stream_rv_knots))
+        eval_interp_rv = jnp.array(_interp_dict['radial_velocity'](stream_rv_knots))
         
         stream_init_params = {
             "phi1": {
@@ -393,11 +504,12 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     ## Create and Optimize Background+Stream Mixture Model ##
     #########################################################
 
-    bkg_model_mm = init_stream.make_bkg_model_component(coords=['phi2', 'pm1', 'pm2', 'rv'],
+    bkg_model_mm = init_stream.make_bkg_model_component(coords=['phi2', 'pm1', 'pm2', 'radial_velocity'],
                                                         knot_spacings=bkg_knot_spacings, n_mixture=n_mixture,
                                                         coord_bounds=coord_bounds, data=run_data, stream_data=stream_data)
-    stream_model_mm = init_stream.make_stream_model_component(knot_spacings=stream_knot_spacings, 
-                                                              coord_bounds=coord_bounds, data=run_data)
+    stream_model_mm = init_stream.make_stream_model_component(knot_spacings=stream_knot_spacings,
+                                                              coord_bounds=coord_bounds, data=run_data,
+                                                              rv_min=rv_min, rv_max=rv_max)
     stream_bkg_mm = ComponentMixtureModel(dist.Dirichlet(jnp.array([1.0, 1.0])), 
                                           components=[bkg_model_mm, stream_model_mm])
 
@@ -417,8 +529,20 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         packed_params = filtered_bkg_results | filtered_stream_results
         packed_params["mixture-probs"] = jnp.array([1-f_stream, f_stream])
 
-        packed_params["mixture:modeldata_auto_loc"] = previous_svi_results.params['mixture:modeldata_auto_loc']
-        packed_params["mixture:modeldata_auto_scale"] = previous_svi_results.params['mixture:modeldata_auto_scale']
+        # The old single joint "mixture:modeldata_auto_loc"/"_auto_scale"
+        # guide-param pair is now one pair PER coordinate (e.g.
+        # "pm1:modeldata_auto_loc", "PS_g-PS_r:modeldata_auto_scale", ...),
+        # since ComponentMixtureModel.__call__ now samples a per-coordinate
+        # ":modeldata" site rather than one shared "mixture:modeldata" site.
+        # `previous_svi_results` is loaded from an old, pre-refactor pickle
+        # (see `if __name__ == '__main__'` below), so it will only ever have
+        # the old-style key(s); this loop is a no-op warm-start for it (the
+        # new per-coordinate sites just fall back to the guide's default
+        # init) but is written generically so it also works once
+        # `previous_svi_results` is regenerated with the new architecture.
+        for key_, value_ in previous_svi_results.params.items():
+            if key_.endswith("modeldata_auto_loc") or key_.endswith("modeldata_auto_scale"):
+                packed_params[key_] = value_
 
         keys = jax.random.split(jax.random.PRNGKey(42), num=2)
         no_off_svi_results, no_off_guide = run_SVI(stream_bkg_mm, packed_params, run_data, run_data_err,
@@ -442,7 +566,10 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     
     print('Offtrack spacings: {}'.format(offtrack_dx))
     
-    offtrack_model, offtrack_phi12_locs = init_stream.make_offtrack_model_component(offtrack_dx, stream_model, coord_bounds)
+    offtrack_model, offtrack_phi12_locs = init_stream.make_offtrack_model_component(
+        offtrack_dx, stream_model, coord_bounds, data=run_data,
+        **OFFTRACK_OPTS,
+    )
 
     ## Untie the offtrack model and create tight priors around stream+background results instead
     ##  This can't be splines since I wouldn't expect this to vary continuously
@@ -457,11 +584,11 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         scale=no_off_params['stream']['pm2']['scale_vals'],
         low=no_off_params['stream']['pm2']['loc_vals']-3*no_off_params['stream']['pm2']['scale_vals'],
         high=no_off_params['stream']['pm2']['loc_vals']+3*no_off_params['stream']['pm2']['scale_vals'])
-    offtrack_model.coord_parameters['rv']['loc_vals'] = dist.TruncatedNormal(
-        loc=no_off_params['stream']['rv']['loc_vals'],
-        scale=no_off_params['stream']['rv']['scale_vals'],
-        low=no_off_params['stream']['rv']['loc_vals']-3*no_off_params['stream']['rv']['scale_vals'],
-        high=no_off_params['stream']['rv']['loc_vals']+3*no_off_params['stream']['rv']['scale_vals'])
+    offtrack_model.coord_parameters['radial_velocity']['loc_vals'] = dist.TruncatedNormal(
+        loc=no_off_params['stream']['radial_velocity']['loc_vals'],
+        scale=no_off_params['stream']['radial_velocity']['scale_vals'],
+        low=no_off_params['stream']['radial_velocity']['loc_vals']-3*no_off_params['stream']['radial_velocity']['scale_vals'],
+        high=no_off_params['stream']['radial_velocity']['loc_vals']+3*no_off_params['stream']['radial_velocity']['scale_vals'])
 
     offtrack_model.coord_parameters['pm1']['scale_vals'] = dist.TruncatedNormal(
         loc=no_off_params['stream']['pm1']['scale_vals'],
@@ -471,26 +598,37 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
         loc=no_off_params['stream']['pm2']['scale_vals'],
         scale=no_off_params['stream']['pm2']['scale_vals'] / 3,
         low=0, high=2*no_off_params['stream']['pm2']['scale_vals'])
-    offtrack_model.coord_parameters['rv']['scale_vals'] = dist.TruncatedNormal(
-        loc=no_off_params['stream']['rv']['scale_vals'],
-        scale=no_off_params['stream']['rv']['scale_vals'] / 3,
-        low=0, high=2*no_off_params['stream']['rv']['scale_vals'])
-    offtrack_model.coord_parameters['pm1']['x'] = run_data['phi1']
-    offtrack_model.coord_parameters['pm2']['x'] = run_data['phi1']
-    offtrack_model.coord_parameters['rv']['x'] = run_data['phi1']
+    offtrack_model.coord_parameters['radial_velocity']['scale_vals'] = dist.TruncatedNormal(
+        loc=no_off_params['stream']['radial_velocity']['scale_vals'],
+        scale=no_off_params['stream']['radial_velocity']['scale_vals'] / 3,
+        low=0, high=2*no_off_params['stream']['radial_velocity']['scale_vals'])
+    # NOTE: no manual 'x' override needed here anymore -- `data=run_data` is
+    # now passed directly into `make_offtrack_model_component` above, so
+    # pm1/pm2/radial_velocity's joint (phi1, phi2) conditioning arrays are
+    # already built correctly (via `_coord_x`/`_coord_x2`) at construction
+    # time. A stale override recomputing this manually would in fact be
+    # *wrong* now, since offtrack's `conditioning_dist` is D=2 and expects
+    # (N, 2) joint (phi1, phi2) pairs, not the old 1D phi1-only array this
+    # override used to assign.
 
+    # Uniform initial node weights: probabilities for the Dirichlet prior, or
+    # zero log-amplitudes (softmax -> uniform) for the softmax prior.
+    if OFFTRACK_OPTS["weight_prior"] == "softmax":
+        _init_mix = jnp.zeros(len(offtrack_phi12_locs))
+    else:
+        _init_mix = jnp.ones(len(offtrack_phi12_locs))
+        _init_mix /= _init_mix.sum()
 
-    _init_prob = jnp.ones(len(offtrack_phi12_locs))
-    _init_prob /= _init_prob.sum()
-    
+    _spatial_init = {"mixing_distribution": _init_mix}
+    if not OFFTRACK_OPTS["fixed_scales"]:
+        # (scales are only a sampled site when not fixed)
+        _spatial_init["scales"] = jnp.array([offtrack_dx] * len(offtrack_phi12_locs)).T
+
     offtrack_init_params = {
-        ("phi1", "phi2"): {
-            "mixing_distribution": _init_prob,
-            "scales": jnp.array([offtrack_dx] * len(offtrack_phi12_locs)).T,
-        },
+        ("phi1", "phi2"): _spatial_init,
         "pm1": no_off_params['stream']['pm1'],
         "pm2": no_off_params['stream']['pm2'],
-        "rv": no_off_params['stream']['rv'],
+        "radial_velocity": no_off_params['stream']['radial_velocity'],
     }
 
     stream_probs = no_off_params['mixture-probs'][-1]
@@ -509,8 +647,14 @@ def main(bkg_knot_spacings, stream_knot_spacings, offtrack_dx,
     mm_packed_params = filtered_no_off_svi_results | mm.pack_params(mm_init_params_off)
     mm_packed_params["mixture-probs"] = jnp.array([bkg_probs, stream_probs, off_probs])
 
-    mm_packed_params["mixture:modeldata_auto_loc"] = no_off_svi_results.params['mixture:modeldata_auto_loc']
-    mm_packed_params["mixture:modeldata_auto_scale"] = no_off_svi_results.params['mixture:modeldata_auto_scale']
+    # Same per-coordinate ":modeldata" site rename as above -- `no_off_svi_results`
+    # is a fresh result from this same run (already using the new
+    # architecture), so this transplants every per-coordinate modeldata
+    # guide param it has (e.g. "pm1:modeldata_auto_loc") into the bigger
+    # (bkg+stream+offtrack) mixture's init params.
+    for key_, value_ in no_off_svi_results.params.items():
+        if key_.endswith("modeldata_auto_loc") or key_.endswith("modeldata_auto_scale"):
+            mm_packed_params[key_] = value_
 
     keys = jax.random.split(jax.random.PRNGKey(42), num=2)
     full_svi_results, full_guide = run_SVI(mm, mm_packed_params, run_data, run_data_err,

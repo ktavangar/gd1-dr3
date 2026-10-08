@@ -10,6 +10,8 @@ from stream_membership.distributions.gmm import IndependentGMM
 import matplotlib.pyplot as plt
 from scipy.stats import truncnorm
 
+import initialize_stream as init_stream
+
 def fit_phi1_scales_weights(
     phi1_data, knots, low, high,
     n_steps=3000, lr=1e-1, n_restarts=10, seed=0,
@@ -409,8 +411,12 @@ def check_phi1_selection_effects(bkg_model, bkg_data, coord_names=("pm1", "pm2",
 
     fig, axes = plt.subplots(1, len(coord_names), figsize=(5 * len(coord_names), 4), squeeze=False)
     for ax, coord_name in zip(axes.flat, coord_names):
-        valid = bkg_data[coord_name] != 0
-        valid_phi1 = np.asarray(bkg_data["phi1"][valid])
+        # bkg_data[coord_name] is already restricted to that coordinate's
+        # valid-only stars (ragged per-coordinate-plate architecture), so its
+        # matching phi1 subsample is looked up via `_coord_x` rather than
+        # re-masking the full `bkg_data["phi1"]` array (which is a different,
+        # generally longer, length).
+        valid_phi1 = np.asarray(init_stream._coord_x(bkg_data, coord_name))
         valid_phi1 = valid_phi1[~np.isnan(valid_phi1)]
 
         ax.hist(full_phi1, bins=bins, density=True, histtype="step", lw=1.5,
@@ -455,9 +461,11 @@ def plot_shape_only_residual(coord_name, bkg_model, bkg_data, bkg_init_params, p
     phi1_c = 0.5 * (phi1_edges[:-1] + phi1_edges[1:])
     y_c = 0.5 * (y_edges[:-1] + y_edges[1:])
 
-    valid = bkg_data[coord_name] != 0
-    phi1_data = np.asarray(bkg_data["phi1"][valid])
-    y_data = np.asarray(bkg_data[coord_name][valid])
+    # bkg_data[coord_name] is already restricted to that coordinate's
+    # valid-only stars; look up its matching phi1 subsample via `_coord_x`
+    # instead of re-masking the full (differently-sized) `bkg_data["phi1"]`.
+    phi1_data = np.asarray(init_stream._coord_x(bkg_data, coord_name))
+    y_data = np.asarray(bkg_data[coord_name])
     good = ~np.isnan(phi1_data) & ~np.isnan(y_data)
     phi1_data, y_data = phi1_data[good], y_data[good]
 
@@ -492,5 +500,80 @@ def plot_shape_only_residual(coord_name, bkg_model, bkg_data, bkg_init_params, p
     ax.set_xlabel("phi1")
     ax.set_ylabel(coord_name)
     ax.set_title(f"{coord_name}: shape-only residual (phi1-marginal + selection divided out)")
+    plt.colorbar(im, ax=ax)
+    return fig, ax
+
+
+def plot_shape_only_residual_mixture(coord_name, mixture_model, data, pars, plot_grids,
+                                      ax=None, smooth=1.0, pcolormesh_kwargs=None):
+    """`ComponentMixtureModel`-aware version of `plot_shape_only_residual`, for
+    checking a joint (e.g. background+stream, `stream_bkg_mm`) fit by eye
+    without the phi1-marginal/selection-function confound described in
+    `plot_shape_only_residual`'s docstring -- most relevant for pm1/pm2/
+    radial_velocity, which are ragged the same way in `run_data` as they were
+    in `bkg_data`, but works for any coordinate (e.g. phi2).
+
+    Unlike the single-component version, this doesn't need to separately
+    combine each component's conditional shape by hand: `evaluate_on_2d_grids`
+    already returns the properly mixture-weighted *joint* ln p(phi1,
+    coord_name) (each component's own phi1 density and its `mixture-probs`
+    weight are both already folded in -- see `ComponentMixtureModel.
+    evaluate_on_2d_grids`). Column-normalizing that joint density (so each
+    phi1 bin integrates to 1 over coord_name) gives exactly the mixture's
+    conditional p(coord_name | phi1) shape, which is the same quantity
+    `plot_shape_only_residual` isolates for a single component -- so the
+    comparison to the (also column-normalized) data histogram cancels out
+    phi1's marginal/selection function here too.
+
+    `pars` can be a packed (flat) params dict (e.g. `packed_params`, used to
+    seed SVI) or an already-expanded/unpacked one (e.g. `no_off_params`,
+    `full_params`) -- `evaluate_on_2d_grids` auto-detects and expands packed
+    params for you.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    phi1_edges = np.asarray(plot_grids["phi1"])
+    y_edges = np.asarray(plot_grids[coord_name])
+
+    grids, ln_ps = mixture_model.evaluate_on_2d_grids(
+        pars=pars, grids=plot_grids,
+        grid_coord_names=[("phi1", coord_name)], x_coord_name="phi1",
+    )
+    (ln_p,) = ln_ps.values()  # joint ln p(phi1, coord_name), mixture-weighted
+
+    model_shape = np.exp(np.asarray(ln_p))
+    model_shape /= np.clip(model_shape.sum(axis=0, keepdims=True), 1e-30, None)
+
+    # coord_name may be ragged (pm1/pm2/radial_velocity) -- use its own
+    # valid-star subsample and the matching phi1 subsample, same convention
+    # as plot_shape_only_residual.
+    phi1_data = np.asarray(init_stream._coord_x(data, coord_name))
+    y_data = np.asarray(data[coord_name])
+    good = ~np.isnan(phi1_data) & ~np.isnan(y_data)
+    phi1_data, y_data = phi1_data[good], y_data[good]
+
+    H_data, _, _ = np.histogram2d(phi1_data, y_data, bins=(phi1_edges, y_edges))
+    H_data = H_data.T  # (n_y, n_phi1), matching plot_residual_projections' convention
+    data_shape = H_data / np.clip(H_data.sum(axis=0, keepdims=True), 1, None)
+
+    resid = model_shape - data_shape
+    if smooth is not None:
+        resid = gaussian_filter(resid, smooth)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 4))
+    else:
+        fig = ax.figure
+
+    pcolormesh_kwargs = dict(pcolormesh_kwargs or {})
+    pcolormesh_kwargs.setdefault("cmap", "coolwarm_r")
+    v = np.nanpercentile(np.abs(resid), 99)
+    pcolormesh_kwargs.setdefault("vmin", -v)
+    pcolormesh_kwargs.setdefault("vmax", v)
+
+    im = ax.pcolormesh(phi1_edges, y_edges, resid, **pcolormesh_kwargs)
+    ax.set_xlabel("phi1")
+    ax.set_ylabel(coord_name)
+    ax.set_title(f"{coord_name}: shape-only residual (mixture, phi1-marginal + selection divided out)")
     plt.colorbar(im, ax=ax)
     return fig, ax

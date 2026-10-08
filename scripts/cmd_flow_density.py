@@ -64,7 +64,7 @@ class CalibratedFlowDensity(dist.Distribution):
         norm_stats: dict[str, dict[str, float]],
         x: ArrayLike | None = None,
         *,
-        event_columns: tuple[str, ...] = ("g0", "r0"),
+        event_columns: tuple[str, ...] = ("g_0", "r_0"),
         cond_column: str = "phi1",
         validate_args: bool | None = None,
     ) -> None:

@@ -67,9 +67,14 @@ from cats.inputs import stream_inputs as inputs
 stream_name = "GD-1"
 AGE_GYR = inputs[stream_name]['age']
 FEH = inputs[stream_name]['feh']
-PHOT_SURVEY = inputs[stream_name]['phot_survey']
-MAG1 = f'{PHOT_SURVEY}_{inputs[stream_name]["band1"]}'
-MAG2 = f'{PHOT_SURVEY}_{inputs[stream_name]["band2"]}'
+PHOT_SURVEY = inputs[stream_name]['phot_survey'][:-1]
+# `cats`/ugali survey names differ from the photometric-system prefixes that
+# `isochrones`' MIST bolometric-correction grids recognize (e.g. MIST calls
+# Pan-STARRS "PanSTARRS", with bands stored as PS_g, PS_r, ...).
+_MIST_PHOT_SYSTEM = {"PS1": "PanSTARRS", "ps1": "PanSTARRS"}
+_MIST_SURVEY = _MIST_PHOT_SYSTEM.get(PHOT_SURVEY, PHOT_SURVEY)
+MAG1 = f'{_MIST_SURVEY}_{inputs[stream_name]["band1"]}'
+MAG2 = f'{_MIST_SURVEY}_{inputs[stream_name]["band2"]}'
 
 # Valluri et al. 2024 GD-1 apparent distance-modulus track, as a function of
 # phi1 (degrees) -- see cats.CMD.Isochrone.__init__:

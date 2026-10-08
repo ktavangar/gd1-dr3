@@ -18,8 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 cd "${REPO_ROOT}" || exit 1
 
-# Activate the Python virtual environment
-source stream-env/bin/activate
+source /Users/Tavangar/Work/virtual_envs/.stream-env/bin/activate
 
 # --- Grid definition ---------------------------------------------------
 flow_layers_values=(4 8 16 32)
@@ -28,14 +27,14 @@ nn_depth_values=(1 2)
 
 # --- Fixed args (override via env vars if needed) -----------------------
 DATA_FILE="${DATA_FILE:-/Users/Tavangar/Work/gd1-dr3/data/GD-1_all_data_2026.fits}"
-BKG_TABLE_PICKLE="${BKG_TABLE_PICKLE:-/Users/Tavangar/Work/gd1-dr3/data/post_cats_data_flow_version.pkl}"
+BKG_TABLE_PICKLE="${BKG_TABLE_PICKLE:-/Users/Tavangar/Work/gd1-dr3/data/for_svi_w_isochrone_cut.pkl}"
 MAX_EPOCHS="${MAX_EPOCHS:-200}"
 MAX_PATIENCE="${MAX_PATIENCE:-10}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 SEED="${SEED:-42}"
 N_PARALLEL="${N_PARALLEL:-4}"
 
-OUT_DIR="data/flow_tests/grid"
+OUT_DIR="data/flow_w_isochrone_cut/grid"
 LOG_DIR="${OUT_DIR}/logs"
 mkdir -p "${OUT_DIR}" "${LOG_DIR}"
 
@@ -64,7 +63,7 @@ run_one() {
   local out="${OUT_DIR}/bkg_cmd_flow_${tag}"
   local log_file="${LOG_DIR}/${tag}.log"
 
-  echo "[${tag}] starting -- log: ${log_file}"
+  echo "[${tag}] starting -- log: ${log_file} using ${BKG_TABLE_PICKLE}"
   python scripts/pretrain_bkg_cmd_flow.py \
     --data-file "${DATA_FILE}" \
     --bkg-table-pickle "${BKG_TABLE_PICKLE}" \
